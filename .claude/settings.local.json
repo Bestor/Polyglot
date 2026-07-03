@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go version *)",
+      "Bash(docker --version)",
+      "Bash(docker image *)",
+      "Bash(docker pull *)",
+      "Bash(./go-docker.sh sh *)",
+      "Bash(docker build *)",
+      "Bash(docker run *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" -X POST http://localhost:18090/api/ask -H \"Content-Type: application/json\" -d '{\"question\":\"test\"}')",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" -X POST http://localhost:18090/api/ask -H \"Authorization: Bearer wrong\" -H \"Content-Type: application/json\" -d '{\"question\":\"test\"}')",
+      "Bash(curl -s -w \"\\\\n%{http_code}\\\\n\" -X POST http://localhost:18090/api/ask -H \"Authorization: Bearer test-token\" -H \"Content-Type: application/json\" -d '{\"question\":\"test\"}')",
+      "Bash(docker exec *)",
+      "Bash(curl -s -X POST http://localhost:18090/api/ask -H 'Authorization: Bearer test-token' -H 'Content-Type: application/json' -d '{\"question\":\"who has the best headshot percentage\",\"players\":[{\"name\":\"TestPlayer\",\"tag\":\"NA1\",\"region\":\"na\"}]}')",
+      "Bash(docker stop *)",
+      "Bash(docker rmi *)",
+      "Bash(chmod +x /Users/joshdale/val-analyzer/run.sh)",
+      "Bash(chmod +x /Users/joshdale/val-analyzer/test.sh)",
+      "Skill(claude-api)",
+      "Skill(claude-api:*)",
+      "Bash(./run.sh --build)"
+    ]
+  }
+}
