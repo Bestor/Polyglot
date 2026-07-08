@@ -19,7 +19,18 @@
       "Bash(chmod +x /Users/joshdale/val-analyzer/test.sh)",
       "Skill(claude-api)",
       "Skill(claude-api:*)",
-      "Bash(./run.sh --build)"
+      "Bash(./run.sh --build)",
+      "Bash(./go-docker.sh go *)",
+      "Bash(docker volume *)",
+      "Bash(docker rm *)",
+      "Bash(grep -n \"func.*DateTime.*Value\\\\|type DateTime\\\\|func NewDateTime\\\\|DefaultDateLayout\" /Users/joshdale/go/pkg/mod/github.com/pocketbase/pocketbase@v0.39.5/tools/types/datetime.go 2>/dev/null)",
+      "Read(//Users/joshdale/go/pkg/mod/github.com/pocketbase/pocketbase@v0.39.5/tools/types/**)",
+      "Bash(./test.sh)",
+      "Bash(grep -n \"SignEq\\\\|SignLike\\\\|SignNeq\\\\|case.*insensitive\\\\|COLLATE\\\\|toLowerCase\\\\|strings.ToLower\" /Users/joshdale/go/pkg/mod/github.com/pocketbase/pocketbase@v0.39.5/tools/search/filter.go 2>/dev/null | head -30)",
+      "Read(//Users/joshdale/go/pkg/mod/github.com/pocketbase/pocketbase@v0.39.5/tools/search/**)",
+      "Bash(grep -rn \"\\\\.DB\\(\\)\\\\.\\\\|ConcurrentDB\\(\\)\\\\.\" /Users/joshdale/go/pkg/mod/github.com/pocketbase/pocketbase@v0.39.5/core/*.go 2>/dev/null | grep -v \"_test.go\" | head -15)",
+      "Read(//Users/joshdale/go/pkg/mod/github.com/pocketbase/pocketbase@v0.39.5/core/**)",
+      "Bash(grep -rn \"app.DB\\(\\).Select\\\\|\\\\.DB\\(\\)\\\\.Select\\(\" /Users/joshdale/go/pkg/mod/github.com/pocketbase/pocketbase@v0.39.5/core/*.go 2>/dev/null | grep -v \"_test.go\" | head -10)"
     ]
   }
 }

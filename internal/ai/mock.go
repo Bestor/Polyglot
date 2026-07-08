@@ -21,8 +21,8 @@ LIMIT 5
 
 // MockProvider is a placeholder Provider used until a real AI backend is
 // chosen. It ignores the question's meaning, but exercises Request.Query
-// for real so the surrounding plumbing (schema, hints, read-only executor)
-// can be verified before any model is wired in.
+// for real so the surrounding plumbing (schema introspection, read-only
+// executor) can be verified before any model is wired in.
 type MockProvider struct{}
 
 func (MockProvider) Answer(ctx context.Context, req Request) (Response, error) {
@@ -33,9 +33,6 @@ func (MockProvider) Answer(ctx context.Context, req Request) (Response, error) {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "[mock provider] question: %q\n", req.Question)
-	if len(req.Hints) > 0 {
-		fmt.Fprintf(&b, "hints: %s\n", strings.Join(req.Hints, "; "))
-	}
 	fmt.Fprintf(&b, "top cached players by match_players rows:\n")
 	for _, row := range result.Rows {
 		fmt.Fprintf(&b, "  %v\n", row)

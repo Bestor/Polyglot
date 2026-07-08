@@ -44,11 +44,28 @@ func (s *PlayerStore) FindByPUUID(puuid string) (Player, bool, error) {
 // this Riot ID before. A miss here doesn't necessarily mean the player has
 // never been cached (e.g. they may have changed their name), just that a
 // fresh lookup is required.
+//
+// The comparison is case-insensitive: HenrikDev's account endpoint returns
+// the canonical casing of a Riot display name, which can differ from
+// whatever casing a question used (e.g. "orbest" -> stored as "OrBest"),
+// so a case-sensitive match would miss the cache - and re-hit the
+// upstream API - on essentially every differently-cased mention of an
+// already-known player.
 func (s *PlayerStore) FindByRiotID(name, tag string) (Player, bool, error) {
-	rec, err := s.app.FindFirstRecordByFilter("players", "riot_name = {:name} && riot_tag = {:tag}", dbx.Params{"name": name, "tag": tag})
+	var id string
+	err := s.app.DB().Select("id").
+		From("players").
+		Where(dbx.NewExp("LOWER(riot_name) = LOWER({:name}) AND LOWER(riot_tag) = LOWER({:tag})", dbx.Params{"name": name, "tag": tag})).
+		Limit(1).
+		Row(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Player{}, false, nil
 	}
+	if err != nil {
+		return Player{}, false, err
+	}
+
+	rec, err := s.app.FindRecordById("players", id)
 	if err != nil {
 		return Player{}, false, err
 	}
@@ -71,7 +88,8 @@ func (s *PlayerStore) Upsert(p Player) (Player, error) {
 		return Player{}, err
 	}
 
-	if rec == nil {
+	isNew := rec == nil
+	if isNew {
 		rec = core.NewRecord(col)
 		rec.Set("riot_puuid", p.PUUID)
 	}
@@ -84,6 +102,14 @@ func (s *PlayerStore) Upsert(p Player) (Player, error) {
 	}
 	if p.Region != "" {
 		rec.Set("region", p.Region)
+	} else if isNew {
+		// A brand-new player must end up with some valid region - it's
+		// required for later sync calls, which the upstream API rejects
+		// outright if it's empty. "na" is a reasonable default when the
+		// caller has no better information (e.g. resolvePlayer always
+		// passes the match's own region, so this only fires in edge
+		// cases where even that isn't available).
+		rec.Set("region", "na")
 	}
 
 	if err := s.app.Save(rec); err != nil {

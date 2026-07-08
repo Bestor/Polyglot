@@ -15,4 +15,5 @@ func RegisterRoutes(se *core.ServeEvent, ing *ingest.Service, schema []ai.TableD
 	group := se.Router.Group("/api")
 	group.BindFunc(requireAuthToken(authToken))
 	group.POST("/ask", handleAsk(ing, schema, query, provider))
+	group.POST("/warm", handleWarm(ing))
 }

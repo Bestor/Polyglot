@@ -45,7 +45,10 @@ func main() {
 		if err := e.Next(); err != nil {
 			return err
 		}
-		return e.App.RunAppMigrations()
+		if err := e.App.RunAppMigrations(); err != nil {
+			return err
+		}
+		return upsertSuperuserFromEnv(e.App, cfg)
 	})
 
 	// Keep the container fully env-driven: `docker run` needs no extra
@@ -88,4 +91,30 @@ func main() {
 	if err := app.Start(); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// upsertSuperuserFromEnv creates (or updates the password of) a superuser
+// account from SUPERUSER_EMAIL/SUPERUSER_PASSWORD, mirroring PocketBase's
+// own `superuser upsert` CLI command - so a container can be fully
+// provisioned via env vars, with no manual first-run step through the
+// admin UI.
+func upsertSuperuserFromEnv(app core.App, cfg config.Config) error {
+	if cfg.SuperuserEmail == "" {
+		return nil
+	}
+
+	superusersCol, err := app.FindCachedCollectionByNameOrId(core.CollectionNameSuperusers)
+	if err != nil {
+		return err
+	}
+
+	superuser, err := app.FindAuthRecordByEmail(superusersCol, cfg.SuperuserEmail)
+	if err != nil {
+		superuser = core.NewRecord(superusersCol)
+	}
+
+	superuser.SetEmail(cfg.SuperuserEmail)
+	superuser.SetPassword(cfg.SuperuserPassword)
+
+	return app.Save(superuser)
 }

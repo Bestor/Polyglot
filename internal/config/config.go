@@ -17,6 +17,8 @@ type Config struct {
 	AIProvider         string
 	AnthropicAPIKey    string
 	APIAuthToken       string
+	SuperuserEmail     string
+	SuperuserPassword  string
 }
 
 func Load() (Config, error) {
@@ -28,6 +30,8 @@ func Load() (Config, error) {
 		AIProvider:         getEnvDefault("AI_PROVIDER", "mock"),
 		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
 		APIAuthToken:       os.Getenv("API_AUTH_TOKEN"),
+		SuperuserEmail:     os.Getenv("SUPERUSER_EMAIL"),
+		SuperuserPassword:  os.Getenv("SUPERUSER_PASSWORD"),
 		RateLimitPerMinute: 30,
 		RateLimitBurst:     30,
 	}
@@ -49,6 +53,9 @@ func Load() (Config, error) {
 	}
 	if cfg.AIProvider == "claude" && cfg.AnthropicAPIKey == "" {
 		return Config{}, fmt.Errorf("ANTHROPIC_API_KEY is required when AI_PROVIDER=claude")
+	}
+	if (cfg.SuperuserEmail == "") != (cfg.SuperuserPassword == "") {
+		return Config{}, fmt.Errorf("SUPERUSER_EMAIL and SUPERUSER_PASSWORD must be set together")
 	}
 
 	return cfg, nil

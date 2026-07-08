@@ -7,8 +7,5 @@ curl -s -X POST http://localhost:8090/api/ask \
   -H "Authorization: Bearer $(grep '^API_AUTH_TOKEN=' .env | cut -d= -f2)" \
   -H "Content-Type: application/json" \
   -d '{
-    "question": "Show me the 10 most recent matches played by this player. Who was their most frequent teammate?",
-    "players": [
-      { "name": "Orbest", "tag": "NA1", "region": "na" }
-    ]
+    "question": "What was goatninja01#NA1s best match by kills?"
   }'
