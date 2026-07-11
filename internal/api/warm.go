@@ -11,10 +11,11 @@ import (
 )
 
 // maxWarmMatches bounds how many matches a single /api/warm call will
-// fetch. Unlike the AI's bounded per-question sync, cache warming is an
-// explicit bulk-load operation, so it's allowed a much larger cap - the
-// data source's rate limit (and doGetRaw's pause-and-retry-on-429
-// behavior) is what actually paces the request volume, not this number.
+// fetch when WarmRequest.All isn't set. Unlike the AI's bounded
+// per-question sync, cache warming is an explicit bulk-load operation, so
+// it's allowed a much larger cap - the data source's rate limit (and
+// doGetRaw's pause-and-retry-on-429 behavior) is what actually paces the
+// request volume, not this number.
 const maxWarmMatches = 500
 
 // handleWarm pre-loads a player's recent match history into the cache
@@ -31,9 +32,13 @@ func handleWarm(ing *ingest.Service) func(e *core.RequestEvent) error {
 			return e.BadRequestError("name and tag are required", nil)
 		}
 
-		count := req.Count
-		if count <= 0 || count > maxWarmMatches {
-			count = maxWarmMatches
+		opts := ingest.SyncOptions{All: req.All}
+		if !opts.All {
+			count := req.Count
+			if count <= 0 || count > maxWarmMatches {
+				count = maxWarmMatches
+			}
+			opts.MaxMatches = count
 		}
 
 		ctx := e.Request.Context()
@@ -44,21 +49,24 @@ func handleWarm(ing *ingest.Service) func(e *core.RequestEvent) error {
 			return e.InternalServerError("failed to resolve player", err)
 		}
 
-		result, err := ing.SyncPlayerMatches(ctx, player, ingest.SyncOptions{MaxMatches: count})
+		slog.Info("api: warm starting", "name", player.Name, "tag", player.Tag, "puuid", player.PUUID, "all", opts.All, "max_matches", opts.MaxMatches)
+
+		result, err := ing.SyncPlayerMatches(ctx, player, opts)
 		if err != nil {
 			slog.Error("api: warm failed to sync matches", "name", req.Name, "tag", req.Tag, "puuid", player.PUUID, "error", err)
 			return e.InternalServerError("failed to sync matches", err)
 		}
 
-		slog.Info("api: warm complete", "name", player.Name, "tag", player.Tag, "puuid", player.PUUID, "fetched", result.Fetched, "skipped", result.Skipped)
+		slog.Info("api: warm complete", "name", player.Name, "tag", player.Tag, "puuid", player.PUUID, "fetched", result.Fetched, "skipped", result.Skipped, "history_exhausted", result.HistoryExhausted)
 
 		return e.JSON(http.StatusOK, WarmResponse{
-			PUUID:   player.PUUID,
-			Name:    player.Name,
-			Tag:     player.Tag,
-			Region:  player.Region,
-			Fetched: result.Fetched,
-			Skipped: result.Skipped,
+			PUUID:            player.PUUID,
+			Name:             player.Name,
+			Tag:              player.Tag,
+			Region:           player.Region,
+			Fetched:          result.Fetched,
+			Skipped:          result.Skipped,
+			HistoryExhausted: result.HistoryExhausted,
 		})
 	}
 }

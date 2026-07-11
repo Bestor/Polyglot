@@ -177,14 +177,20 @@ func matchesUpdater(ing *ingest.Service, matchesSynced *int) ai.TableUpdater {
 
 // coverageSufficient decides whether the local cache already satisfies a
 // matches update request, so it can be skipped without calling the
-// upstream API at all. In date-range mode, sufficient means the cache
-// already has a match at or before the requested start date (see
+// upstream API at all. If HistoryExhausted is set (e.g. from an earlier
+// /api/warm all=true call), the player's entire match history is already
+// cached, so any request - however far back - is trivially satisfied.
+// Otherwise, in date-range mode, sufficient means the cache already has a
+// match at or before the requested start date (see
 // store.MatchStore.PlayerCoverage for what that guarantees). In
 // count-only mode, sufficient means at least as many matches are already
 // cached as requested - this doesn't guarantee freshness (new matches may
 // have been played since the last sync), but re-checking that on every
 // question would defeat the point of caching.
 func coverageSufficient(coverage ingest.CoverageResult, opts ingest.SyncOptions) bool {
+	if coverage.HistoryExhausted {
+		return true
+	}
 	if opts.Since != nil {
 		return coverage.Count > 0 && !coverage.Oldest.After(*opts.Since)
 	}

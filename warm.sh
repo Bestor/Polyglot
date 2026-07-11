@@ -10,5 +10,5 @@ curl -s -X POST http://localhost:8090/api/warm \
   -d '{
     "name": "OrBest",
     "tag": "NA1",
-    "count": 50
+    "all": true
   }'

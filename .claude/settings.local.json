@@ -30,7 +30,9 @@
       "Read(//Users/joshdale/go/pkg/mod/github.com/pocketbase/pocketbase@v0.39.5/tools/search/**)",
       "Bash(grep -rn \"\\\\.DB\\(\\)\\\\.\\\\|ConcurrentDB\\(\\)\\\\.\" /Users/joshdale/go/pkg/mod/github.com/pocketbase/pocketbase@v0.39.5/core/*.go 2>/dev/null | grep -v \"_test.go\" | head -15)",
       "Read(//Users/joshdale/go/pkg/mod/github.com/pocketbase/pocketbase@v0.39.5/core/**)",
-      "Bash(grep -rn \"app.DB\\(\\).Select\\\\|\\\\.DB\\(\\)\\\\.Select\\(\" /Users/joshdale/go/pkg/mod/github.com/pocketbase/pocketbase@v0.39.5/core/*.go 2>/dev/null | grep -v \"_test.go\" | head -10)"
+      "Bash(grep -rn \"app.DB\\(\\).Select\\\\|\\\\.DB\\(\\)\\\\.Select\\(\" /Users/joshdale/go/pkg/mod/github.com/pocketbase/pocketbase@v0.39.5/core/*.go 2>/dev/null | grep -v \"_test.go\" | head -10)",
+      "WebFetch(domain:api.henrikdev.xyz)",
+      "WebFetch(domain:docs.henrikdev.xyz)"
     ]
   }
 }

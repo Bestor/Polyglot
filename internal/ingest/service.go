@@ -28,6 +28,12 @@ const matchListPageSize = 25
 // loop forever.
 const maxSyncPages = 20
 
+// maxAllSyncPages is the equivalent bound used for SyncOptions.All - much
+// higher since the point of that mode is to actually reach the end of a
+// player's history, but still finite as a backstop against a data source
+// that never returns an empty page.
+const maxAllSyncPages = 1000
+
 type Service struct {
 	source  data_sources.Source
 	players *store.PlayerStore
@@ -77,6 +83,11 @@ func (s *Service) ResolvePlayer(ctx context.Context, name, tag string) (store.Pl
 type CoverageResult struct {
 	Count  int
 	Oldest time.Time
+	// HistoryExhausted mirrors store.Player.HistoryExhausted: when true,
+	// coverage.Oldest is known to be this player's actual first-ever
+	// match, not just however far a prior sync happened to reach - so any
+	// requested start date, no matter how early, is already satisfied.
+	HistoryExhausted bool
 }
 
 // CheckCoverage reports the local cache's coverage for player as of until
@@ -86,14 +97,14 @@ func (s *Service) CheckCoverage(player store.Player, until *time.Time) (Coverage
 	if err != nil {
 		return CoverageResult{}, err
 	}
-	return CoverageResult{Count: count, Oldest: oldest}, nil
+	return CoverageResult{Count: count, Oldest: oldest, HistoryExhausted: player.HistoryExhausted}, nil
 }
 
 type SyncOptions struct {
 	// MaxMatches bounds how many uncached matches are fetched in a single
 	// call, so one request can never block for an unbounded amount of time
 	// under the data source's rate limit. Always enforced, regardless of
-	// whether Since/Until are set.
+	// whether Since/Until are set - ignored entirely when All is true.
 	MaxMatches int
 	// Since and Until optionally bound the sync to matches started within
 	// [Since, Until]. SyncPlayerMatches always pages backward through the
@@ -103,6 +114,13 @@ type SyncOptions struct {
 	// set - the oldest match on a page predates Since. Until defaults to
 	// "now" when Since is set.
 	Since, Until *time.Time
+	// All, when true, ignores MaxMatches and the usual page-count safety
+	// bound, paginating until the upstream match history is exhausted (an
+	// empty page) instead. Intended for explicit, deliberate cache-warming
+	// calls, not the AI's per-question sync - a long-lived player's full
+	// history can be large and this can take a while under the rate
+	// limit, even with doGetRaw's pause-and-retry-on-429 handling.
+	All bool
 }
 
 type SyncResult struct {
@@ -114,25 +132,38 @@ type SyncResult struct {
 	// covered the requested window or gave up early (MaxMatches/
 	// maxSyncPages/upstream history exhausted).
 	OldestFetched time.Time
+	// HistoryExhausted is true if this call reached the true end of the
+	// player's match history (the data source returned an empty page),
+	// as opposed to stopping early due to MaxMatches, Since, or a page
+	// cap. See store.Player.HistoryExhausted.
+	HistoryExhausted bool
 }
 
 // SyncPlayerMatches fetches the player's match list, then fetches and
 // caches full detail for every match not already stored, up to
-// opts.MaxMatches, optionally restricted to opts.Since/opts.Until. Season
-// resolution is best-effort: if a match's season isn't cached yet, the
-// match is still stored with season_id_raw set and no season relation.
+// opts.MaxMatches (or, if opts.All, until upstream history is exhausted),
+// optionally restricted to opts.Since/opts.Until. Season resolution is
+// best-effort: if a match's season isn't cached yet, the match is still
+// stored with season_id_raw set and no season relation.
 func (s *Service) SyncPlayerMatches(ctx context.Context, player store.Player, opts SyncOptions) (SyncResult, error) {
 	var result SyncResult
 	var latestSynced time.Time
 	offset := 0
 
-	for page := 0; page < maxSyncPages; page++ {
+	maxPages := maxSyncPages
+	if opts.All {
+		maxPages = maxAllSyncPages
+	}
+
+pagingLoop:
+	for page := 0; page < maxPages; page++ {
 		entries, err := s.source.GetMatchList(ctx, player.Region, platform, player.PUUID, matchListPageSize, offset)
 		if err != nil {
 			return result, err
 		}
 		slog.Debug("ingest: fetched match list page", "puuid", player.PUUID, "page", page, "offset", offset, "count", len(entries))
 		if len(entries) == 0 {
+			result.HistoryExhausted = true
 			break
 		}
 
@@ -162,8 +193,8 @@ func (s *Service) SyncPlayerMatches(ctx context.Context, player store.Player, op
 				result.Skipped++
 				continue
 			}
-			if result.Fetched >= opts.MaxMatches {
-				return result, nil
+			if !opts.All && result.Fetched >= opts.MaxMatches {
+				break pagingLoop
 			}
 
 			detail, err := s.source.GetMatch(ctx, player.Region, entry.MatchID)
@@ -194,6 +225,11 @@ func (s *Service) SyncPlayerMatches(ctx context.Context, player store.Player, op
 
 	if !latestSynced.IsZero() {
 		if err := s.players.UpdateLastSyncedMatchAt(player.ID, latestSynced); err != nil {
+			return result, err
+		}
+	}
+	if result.HistoryExhausted && !player.HistoryExhausted {
+		if err := s.players.MarkHistoryExhausted(player.ID); err != nil {
 			return result, err
 		}
 	}

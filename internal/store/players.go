@@ -18,6 +18,10 @@ type Player struct {
 	Tag               string
 	Region            string
 	LastSyncedMatchAt time.Time
+	// HistoryExhausted is true once a backward sync has, at least once,
+	// walked all the way back to this player's very first match (the data
+	// source returned an empty page) - see MarkHistoryExhausted.
+	HistoryExhausted bool
 }
 
 type PlayerStore struct {
@@ -128,6 +132,19 @@ func (s *PlayerStore) UpdateLastSyncedMatchAt(id string, t time.Time) error {
 	return s.app.Save(rec)
 }
 
+// MarkHistoryExhausted permanently marks that this player's match history
+// has been walked all the way back to its true beginning - a one-way
+// transition, since a player's full history only grows forward in time,
+// never further back.
+func (s *PlayerStore) MarkHistoryExhausted(id string) error {
+	rec, err := s.app.FindRecordById("players", id)
+	if err != nil {
+		return err
+	}
+	rec.Set("history_exhausted", true)
+	return s.app.Save(rec)
+}
+
 func recordToPlayer(rec *core.Record) Player {
 	return Player{
 		ID:                rec.Id,
@@ -136,5 +153,6 @@ func recordToPlayer(rec *core.Record) Player {
 		Tag:               rec.GetString("riot_tag"),
 		Region:            rec.GetString("region"),
 		LastSyncedMatchAt: rec.GetDateTime("last_synced_match_at").Time(),
+		HistoryExhausted:  rec.GetBool("history_exhausted"),
 	}
 }
