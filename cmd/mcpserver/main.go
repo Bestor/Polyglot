@@ -7,15 +7,21 @@ package main
 
 import (
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"val-analyzer/internal/logging"
 	"val-analyzer/internal/mcpserver"
 )
 
 func main() {
+	debug := getEnvBool("DEBUG", false)
+	logging.Init(debug)
+
 	specPath := getEnvDefault("OPENAPI_SPEC_PATH", "openapi/polyglot.yaml")
 	port := getEnvDefault("PORT", "8092")
 
@@ -46,7 +52,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", handler)
 
-	log.Printf("mcpserver: exposing %d tool(s) from %s, proxying to %s, listening on :%s/mcp", len(ops), specPath, polyglotURL, port)
+	slog.Info("mcpserver: starting", "tools", len(ops), "spec", specPath, "polyglot_url", polyglotURL, "port", port, "debug", debug)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatal(err)
 	}
@@ -57,4 +63,12 @@ func getEnvDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func getEnvBool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	return v == "1" || strings.EqualFold(v, "true")
 }

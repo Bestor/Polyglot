@@ -4,9 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
+
+// maxLoggedPayload caps how much of a raw argument/response body ends up in
+// a single Debug log line, so one large tool call doesn't flood stderr.
+const maxLoggedPayload = 4096
 
 // serverName/serverVersion identify this MCP server to connecting clients.
 const (
@@ -40,14 +46,27 @@ func toolHandler(op Operation, client *Client) mcp.ToolHandler {
 		args := map[string]any{}
 		if len(req.Params.Arguments) > 0 {
 			if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+				slog.Warn("mcpserver: invalid tool arguments", "tool", op.Name, "error", err,
+					"raw_args", truncateForLog(string(req.Params.Arguments), maxLoggedPayload))
 				return errorResult(fmt.Sprintf("invalid tool arguments: %v", err)), nil
 			}
 		}
 
+		slog.Info("mcpserver: tool call", "tool", op.Name, "method", op.Method, "path", op.Path)
+		slog.Debug("mcpserver: tool call args", "tool", op.Name, "args", args)
+		start := time.Now()
+
 		status, body, err := client.Call(ctx, op, args)
 		if err != nil {
+			slog.Error("mcpserver: tool call transport failure", "tool", op.Name, "error", err,
+				"duration_ms", time.Since(start).Milliseconds())
 			return nil, fmt.Errorf("calling polyglot %s %s: %w", op.Method, op.Path, err)
 		}
+
+		slog.Info("mcpserver: tool call complete", "tool", op.Name, "status", status,
+			"duration_ms", time.Since(start).Milliseconds())
+		slog.Debug("mcpserver: tool call response", "tool", op.Name,
+			"body", truncateForLog(string(body), maxLoggedPayload))
 
 		return &mcp.CallToolResult{
 			IsError: status >= 400,
@@ -61,4 +80,13 @@ func errorResult(text string) *mcp.CallToolResult {
 		IsError: true,
 		Content: []mcp.Content{&mcp.TextContent{Text: text}},
 	}
+}
+
+// truncateForLog caps s at max bytes so a large tool argument or response
+// body can't flood a single Debug log line.
+func truncateForLog(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
 }

@@ -41,7 +41,7 @@ func NewReadOnlyExecutor(dataDir string) (QueryFunc, error) {
 	return func(ctx context.Context, sqlText string) (QueryResult, error) {
 		trimmed := strings.TrimSpace(sqlText)
 		start := time.Now()
-		slog.Info("ai: sql query", "sql", trimmed)
+		slog.Debug("ai: sql query", "sql", trimmed)
 
 		upper := strings.ToUpper(trimmed)
 		if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
@@ -87,7 +87,8 @@ func NewReadOnlyExecutor(dataDir string) (QueryFunc, error) {
 			return QueryResult{}, err
 		}
 
-		slog.Info("ai: sql query complete", "sql", trimmed, "rows", len(result.Rows), "duration_ms", time.Since(start).Milliseconds())
+		slog.Info("ai: sql query complete", "rows", len(result.Rows), "truncated", result.Truncated, "duration_ms", time.Since(start).Milliseconds())
+		slog.Debug("ai: sql query complete", "sql", trimmed)
 
 		return result, nil
 	}, nil

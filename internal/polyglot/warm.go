@@ -2,7 +2,9 @@ package polyglot
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/pocketbase/pocketbase/core"
 
@@ -32,6 +34,7 @@ func handleWarm(functions map[string]Function) func(e *core.RequestEvent) error 
 
 		fn, ok := functions[req.Function]
 		if !ok {
+			slog.Warn("polyglot: warm called with unknown function", "function", req.Function)
 			return e.BadRequestError(fmt.Sprintf("unknown function %q", req.Function), nil)
 		}
 
@@ -39,10 +42,17 @@ func handleWarm(functions map[string]Function) func(e *core.RequestEvent) error 
 			return e.BadRequestError(err.Error(), nil)
 		}
 
+		slog.Info("polyglot: warm", "function", req.Function)
+		slog.Debug("polyglot: warm args", "function", req.Function, "args", req.Args)
+		start := time.Now()
+
 		outcome, err := fn.Run(e.Request.Context(), req.Args)
 		if err != nil {
+			slog.Error("polyglot: warm failed", "function", req.Function, "error", err, "duration_ms", time.Since(start).Milliseconds())
 			return e.InternalServerError(fmt.Sprintf("%s failed", req.Function), err)
 		}
+
+		slog.Info("polyglot: warm complete", "function", req.Function, "summary", outcome.Summary, "duration_ms", time.Since(start).Milliseconds())
 
 		return e.JSON(http.StatusOK, WarmResponse{
 			Function: req.Function,

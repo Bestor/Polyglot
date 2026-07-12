@@ -17,6 +17,7 @@ import (
 	"val-analyzer/internal/config"
 	"val-analyzer/internal/data_sources/henrik"
 	"val-analyzer/internal/ingest"
+	"val-analyzer/internal/logging"
 	_ "val-analyzer/internal/migrations"
 	"val-analyzer/internal/ratelimit"
 	"val-analyzer/internal/store"
@@ -27,6 +28,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	logging.Init(cfg.Debug)
 
 	app := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDataDir: cfg.PBDataDir,

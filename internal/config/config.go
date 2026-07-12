@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 type Config struct {
@@ -19,6 +20,10 @@ type Config struct {
 	APIAuthToken       string
 	SuperuserEmail     string
 	SuperuserPassword  string
+	// Debug enables verbose (slog.Debug-level) logging: full SQL query
+	// text, request/response payloads, and tool-call arguments. Off by
+	// default since those can be large and noisy for routine operation.
+	Debug bool
 }
 
 func Load() (Config, error) {
@@ -32,6 +37,7 @@ func Load() (Config, error) {
 		APIAuthToken:       os.Getenv("API_AUTH_TOKEN"),
 		SuperuserEmail:     os.Getenv("SUPERUSER_EMAIL"),
 		SuperuserPassword:  os.Getenv("SUPERUSER_PASSWORD"),
+		Debug:              getEnvBool("DEBUG", false),
 		RateLimitPerMinute: 30,
 		RateLimitBurst:     30,
 	}
@@ -66,4 +72,12 @@ func getEnvDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func getEnvBool(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	return v == "1" || strings.EqualFold(v, "true")
 }

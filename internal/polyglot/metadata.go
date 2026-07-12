@@ -1,6 +1,7 @@
 package polyglot
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/pocketbase/pocketbase/core"
@@ -74,6 +75,7 @@ func buildMetadata(app core.App, functions []Function) (MetadataResponse, error)
 // during a boot's migrations, not per-request.
 func handleMetadata(metadata MetadataResponse) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
+		slog.Info("polyglot: metadata requested")
 		return e.JSON(http.StatusOK, metadata)
 	}
 }
