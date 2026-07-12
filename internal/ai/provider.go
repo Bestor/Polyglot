@@ -20,6 +20,9 @@ import "context"
 type QueryResult struct {
 	Columns []string `json:"columns"`
 	Rows    [][]any  `json:"rows"`
+	// Truncated is true if the executor's row safety cap cut off further
+	// results - see maxQueryRows in query.go.
+	Truncated bool `json:"truncated"`
 }
 
 // QueryFunc executes a single read-only SQL statement against the cached

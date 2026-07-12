@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -16,6 +17,11 @@ const (
 	maxQueryRows = 500
 	queryTimeout = 10 * time.Second
 )
+
+// ErrNotReadOnly is returned when the given SQL text isn't a SELECT/WITH
+// statement, so callers (e.g. an HTTP handler) can distinguish a bad
+// request from a real execution failure.
+var ErrNotReadOnly = errors.New("only SELECT/WITH queries are allowed")
 
 // NewReadOnlyExecutor opens a second, independent connection to
 // PocketBase's own SQLite data file in read-only mode and returns a
@@ -39,9 +45,8 @@ func NewReadOnlyExecutor(dataDir string) (QueryFunc, error) {
 
 		upper := strings.ToUpper(trimmed)
 		if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
-			err := fmt.Errorf("only SELECT/WITH queries are allowed")
-			slog.Warn("ai: sql query rejected", "sql", trimmed, "error", err)
-			return QueryResult{}, err
+			slog.Warn("ai: sql query rejected", "sql", trimmed, "error", ErrNotReadOnly)
+			return QueryResult{}, ErrNotReadOnly
 		}
 
 		qCtx, cancel := context.WithTimeout(ctx, queryTimeout)
@@ -62,6 +67,9 @@ func NewReadOnlyExecutor(dataDir string) (QueryFunc, error) {
 		result := QueryResult{Columns: cols}
 		for rows.Next() {
 			if len(result.Rows) >= maxQueryRows {
+				// rows.Next() just advanced past a real row beyond the cap,
+				// so there's strictly more data than what's being returned.
+				result.Truncated = true
 				break
 			}
 

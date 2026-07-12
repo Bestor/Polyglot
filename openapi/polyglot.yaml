@@ -1,0 +1,335 @@
+openapi: 3.1.0
+info:
+  title: polyglot Data API
+  version: "0.1.0"
+  description: |
+    polyglot is the standalone data layer for val-analyzer's Valorant stats backend. It owns
+    the PocketBase-embedded SQLite database and exposes it behind a small, engine-agnostic
+    REST contract: submit ANSI-compliant SQL to read cached data, trigger named "warm"
+    functions to pull fresh data in from the upstream (severely rate-limited) Riot/HenrikDev
+    API, and introspect the live schema. The name reflects the intent that callers speak one
+    SQL dialect (ANSI SQL) while polyglot handles whatever storage engine actually backs it
+    (SQLite via PocketBase today).
+
+    polyglot has no AI/reasoning logic of its own - it is a pure data API. A separate MCP
+    server wraps these three endpoints as tools for an AI model to call when answering a
+    user's question, and hosts its own `/ask` endpoint for a CLI client.
+
+servers:
+  - url: http://localhost:8090
+    description: Local Docker container (see run.sh)
+
+security:
+  - bearerAuth: []
+
+paths:
+  /query:
+    get:
+      operationId: query
+      summary: Run a read-only ANSI SQL query
+      description: |
+        Executes a single `SELECT` or `WITH` statement against the database and returns
+        matching rows as JSON objects keyed by column name. The query runs against a
+        read-only connection as the primary safety boundary; the SELECT/WITH prefix check is
+        defense in depth on top of that, not the main guarantee. Include your own
+        `LIMIT`/`OFFSET` in the SQL text - polyglot does not layer separate pagination
+        parameters on top of the query, it only enforces a hard server-side cap on rows
+        returned (see `truncated` in the response).
+      parameters:
+        - name: sql
+          in: query
+          required: true
+          schema:
+            type: string
+          description: An ANSI-compliant SQL `SELECT` or `WITH` statement.
+          example: "SELECT name, tag, region FROM players WHERE tag = 'NA1' LIMIT 10"
+      responses:
+        "200":
+          description: Query executed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResponse"
+              example:
+                rows:
+                  - puuid: "abc123"
+                    name: "OrBest"
+                    tag: "NA1"
+                row_count: 1
+                truncated: false
+        "400":
+          description: The query is missing, empty, or not a SELECT/WITH statement.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          description: The query failed to execute (syntax error, unknown table/column, timeout).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /warm:
+    post:
+      operationId: warm
+      summary: Invoke a named data-fill function
+      description: |
+        Calls one of the functions advertised by `GET /metadata`'s `functions` list (e.g.
+        resolving a Riot ID into a cached player, or syncing a player's match history from the
+        upstream API) with the given arguments. This is the only way polyglot talks to the
+        upstream, rate-limited data source - `GET /query` only ever reads what's already
+        cached locally.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WarmRequest"
+            example:
+              function: sync_matches
+              args:
+                player_tag: "OrBest#NA1"
+                start_date: "2026-05-01"
+                count: 100
+      responses:
+        "200":
+          description: Function ran successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WarmResponse"
+              example:
+                function: sync_matches
+                summary: "synced 12 new matches (skipped 3 already cached) for OrBest#NA1, puuid abc123"
+                data:
+                  fetched: 12
+                  skipped: 3
+                  history_exhausted: false
+        "400":
+          description: Unknown function name, or a missing/invalid required argument.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          description: The function failed while running (e.g. an upstream sync error).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /metadata:
+    get:
+      operationId: getMetadata
+      summary: Describe the live database schema and available warm functions
+      description: |
+        Introspects the live database and returns every table's columns and types, merged
+        with hand-authored descriptions giving semantic context (units, enum meanings, join
+        hints, etc.), plus the list of functions callable via `POST /warm` and the arguments
+        each one accepts. This is the discovery mechanism an MCP client or AI model uses to
+        know what it can query and what data-fill functions exist, without reading polyglot's
+        source.
+      responses:
+        "200":
+          description: Current schema and function metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetadataResponse"
+              example:
+                tables:
+                  - name: players
+                    description: "Cached Riot account identities."
+                    columns:
+                      - name: puuid
+                        type: text
+                        description: "Riot's globally unique player id."
+                      - name: name
+                        type: text
+                        description: "Riot ID name, before the #."
+                functions:
+                  - name: resolve_player
+                    description: "Resolve a Riot ID (name#tag) into a cached player identity."
+                    args:
+                      - name: name
+                        type: string
+                        required: true
+                        description: "Riot ID name, before the #."
+                      - name: tag
+                        type: string
+                        required: true
+                        description: "Riot ID tag, after the #."
+                  - name: sync_matches
+                    description: "Fetch and cache a player's matches from the upstream Valorant API."
+                    args:
+                      - name: player_tag
+                        type: string
+                        required: true
+                        description: 'The player''s Riot ID as name#tag, e.g. "OrBest#NA1".'
+                      - name: start_date
+                        type: string
+                        required: false
+                        description: "ISO-8601 date, earliest match start date to ensure is cached."
+                      - name: end_date
+                        type: string
+                        required: false
+                        description: "ISO-8601 date, latest match start date to ensure is cached."
+                      - name: count
+                        type: integer
+                        required: false
+                        description: "Safety cap on how many matches to fetch this call."
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Static shared-secret bearer token, constant-time compared server-side (same scheme as
+        val-analyzer's existing internal/api/auth.go). Not a per-user identity.
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      description: PocketBase's standard API error envelope.
+      required: [status, message, data]
+      properties:
+        status:
+          type: integer
+          example: 400
+        message:
+          type: string
+          example: "invalid request body"
+        data:
+          type: object
+          additionalProperties: true
+
+    Row:
+      type: object
+      description: One result row, keyed by column name.
+      additionalProperties:
+        type: [string, number, boolean, "null"]
+
+    QueryResponse:
+      type: object
+      required: [rows, row_count, truncated]
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/Row"
+        row_count:
+          type: integer
+          minimum: 0
+          description: Number of rows in `rows`.
+        truncated:
+          type: boolean
+          description: True if the server-side row safety cap cut off further results.
+
+    WarmRequest:
+      type: object
+      required: [function, args]
+      properties:
+        function:
+          type: string
+          description: Name of a function advertised by GET /metadata's `functions` list.
+          example: sync_matches
+        args:
+          type: object
+          description: Function-specific arguments; see GET /metadata for each function's argument list.
+          additionalProperties: true
+
+    WarmResponse:
+      type: object
+      required: [function, summary]
+      properties:
+        function:
+          type: string
+        summary:
+          type: string
+          description: Human/AI-readable summary of what the function did.
+        data:
+          type: object
+          description: Function-specific structured result fields.
+          additionalProperties: true
+
+    ColumnDescription:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          description: PocketBase field type (e.g. text, number, bool, date, relation).
+        description:
+          type: string
+          description: Hand-authored semantic context; may be empty if no note exists for this column.
+
+    TableDescription:
+      type: object
+      required: [name, columns]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/ColumnDescription"
+
+    FunctionArg:
+      type: object
+      required: [name, type, required]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          description: Argument type (string, integer, boolean, ...).
+        required:
+          type: boolean
+        description:
+          type: string
+
+    FunctionDescription:
+      type: object
+      required: [name, args]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        args:
+          type: array
+          items:
+            $ref: "#/components/schemas/FunctionArg"
+
+    MetadataResponse:
+      type: object
+      required: [tables, functions]
+      properties:
+        tables:
+          type: array
+          items:
+            $ref: "#/components/schemas/TableDescription"
+        functions:
+          type: array
+          items:
+            $ref: "#/components/schemas/FunctionDescription"
