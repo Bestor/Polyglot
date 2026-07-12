@@ -1,10 +1,20 @@
 #!/bin/sh
-# Runs the val-analyzer container. Pass --build (or -b) to rebuild the
+# Runs the full val-analyzer stack - the main server, the standalone
+# polyglot Data API, and its MCP server - all with DEBUG=true (verbose
+# slog output: full SQL text, request args, response bodies; see
+# internal/logging and .env.example). Pass --build (or -b) to rebuild the
 # image first; otherwise the existing local image is reused.
+#
+# server and polyglot each get their own PocketBase data volume rather
+# than sharing one: PocketBase isn't designed for two app instances to
+# write to the same SQLite data dir concurrently, so polyglot/mcpserver
+# start with their own independently-warmed cache, separate from
+# server's. Warm it via polyglot's own /warm endpoint (or an MCP tool
+# call) rather than expecting server's cache to already be there.
 set -e
 
 IMAGE=val-analyzer
-CONTAINER=val-analyzer
+NETWORK=val-analyzer-net
 
 BUILD=false
 for arg in "$@"; do
@@ -17,12 +27,38 @@ if [ "$BUILD" = true ]; then
   docker build -t "$IMAGE" .
 fi
 
-docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+docker network create "$NETWORK" >/dev/null 2>&1 || true
 
-docker run -d --name "$CONTAINER" \
+docker rm -f val-analyzer val-analyzer-polyglot val-analyzer-mcpserver >/dev/null 2>&1 || true
+
+docker run -d --name val-analyzer --network "$NETWORK" \
   -p 8090:8090 \
   --env-file .env \
+  -e DEBUG=true \
   -v val-analyzer-data:/app/pb_data \
   "$IMAGE"
 
-echo "val-analyzer running at http://localhost:8090 (docker logs -f $CONTAINER)"
+docker run -d --name val-analyzer-polyglot --network "$NETWORK" \
+  -p 8091:8091 \
+  --env-file .env \
+  -e PORT=8091 \
+  -e DEBUG=true \
+  -v val-analyzer-polyglot-data:/app/pb_data \
+  --entrypoint /app/polyglot \
+  "$IMAGE"
+
+POLYGLOT_AUTH_TOKEN=$(grep '^API_AUTH_TOKEN=' .env | cut -d= -f2)
+
+docker run -d --name val-analyzer-mcpserver --network "$NETWORK" \
+  -p 8092:8092 \
+  -e PORT=8092 \
+  -e POLYGLOT_URL=http://val-analyzer-polyglot:8091 \
+  -e POLYGLOT_AUTH_TOKEN="$POLYGLOT_AUTH_TOKEN" \
+  -e DEBUG=true \
+  --entrypoint /app/mcpserver \
+  "$IMAGE"
+
+echo "val-analyzer running at http://localhost:8090          (docker logs -f val-analyzer)"
+echo "polyglot      running at http://localhost:8091          (docker logs -f val-analyzer-polyglot)"
+echo "mcpserver     running at http://localhost:8092/mcp      (docker logs -f val-analyzer-mcpserver)"
+echo "all three started with DEBUG=true - full SQL/args/response bodies will show up in their logs"
