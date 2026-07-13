@@ -4,6 +4,11 @@
 # response bodies; see internal/logging and .env.example). Pass --build
 # (or -b) to rebuild the image first; otherwise the existing local image
 # is reused.
+#
+# HENRIK_API_KEY in .env is optional: if set, polyglot auto-onboards the
+# valorant datasource on boot; if unset, polyglot still starts with zero
+# datasources onboarded - onboard any datasource (including valorant)
+# later via POST /datasources. See openapi/polyglot.yaml.
 set -e
 
 IMAGE=val-analyzer

@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"time"
 
-	"val-analyzer/internal/data_sources"
+	"val-analyzer/internal/providers/valorant/data_sources"
 	"val-analyzer/internal/ratelimit"
 )
 

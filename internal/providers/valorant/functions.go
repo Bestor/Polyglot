@@ -1,9 +1,4 @@
-// Package polyglot implements the polyglot Data API described by
-// openapi/polyglot.yaml: GET /query (read-only ANSI SQL), POST /warm
-// (named data-fill functions), and GET /metadata (schema + function
-// discovery). It has no AI/reasoning logic of its own - that lives in a
-// separate MCP server that calls these endpoints.
-package polyglot
+package valorant
 
 import (
 	"context"
@@ -12,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"val-analyzer/internal/ai"
-	"val-analyzer/internal/ingest"
+	"val-analyzer/internal/dataprovider"
+	"val-analyzer/internal/providers/valorant/ingest"
 )
 
 // maxSyncMatchesPerCall bounds how many matches a single sync_matches call
@@ -26,49 +21,30 @@ const maxSyncMatchesPerCall = 100
 // defaultSyncMatchCount is used when a sync_matches call doesn't specify count.
 const defaultSyncMatchCount = 50
 
-// FunctionOutcome reports what a Function's Run call did: Summary is a
-// human/AI-readable description (returned as-is in the HTTP response),
-// Data is function-specific structured fields.
-type FunctionOutcome struct {
-	Summary string
-	Data    map[string]any
-}
-
-type FunctionFunc func(ctx context.Context, args map[string]any) (FunctionOutcome, error)
-
-// Function is a named, generically-invokable data-fill action, callable
-// via POST /warm and self-described (name/args) via GET /metadata.
-type Function struct {
-	Name        string
-	Description string
-	Args        []ai.UpdateArg
-	Run         FunctionFunc
-}
-
 // resolvePlayerFunction lets a caller resolve a Riot ID (name#tag) into a
 // cached player identity, without necessarily syncing any match history.
-func resolvePlayerFunction(ing *ingest.Service) Function {
-	return Function{
+func resolvePlayerFunction(ing *ingest.Service) dataprovider.Function {
+	return dataprovider.Function{
 		Name:        "resolve_player",
 		Description: "Resolve a Riot ID (name#tag) into a cached player identity. Does not fetch match history - use sync_matches for that.",
-		Args: []ai.UpdateArg{
+		Args: []dataprovider.FunctionArg{
 			{Name: "name", Type: "string", Description: "Riot ID name, before the #.", Required: true},
 			{Name: "tag", Type: "string", Description: "Riot ID tag, after the #.", Required: true},
 		},
-		Run: func(ctx context.Context, args map[string]any) (FunctionOutcome, error) {
+		Run: func(ctx context.Context, args map[string]any) (dataprovider.FunctionOutcome, error) {
 			name, _ := args["name"].(string)
 			tag, _ := args["tag"].(string)
 			if name == "" || tag == "" {
-				return FunctionOutcome{}, fmt.Errorf("resolve_player requires non-empty name and tag")
+				return dataprovider.FunctionOutcome{}, fmt.Errorf("resolve_player requires non-empty name and tag")
 			}
 
 			player, err := ing.ResolvePlayer(ctx, name, tag)
 			if err != nil {
-				slog.Error("polyglot: resolve_player failed", "name", name, "tag", tag, "error", err)
-				return FunctionOutcome{}, fmt.Errorf("failed to resolve %s#%s: %w", name, tag, err)
+				slog.Error("valorant: resolve_player failed", "name", name, "tag", tag, "error", err)
+				return dataprovider.FunctionOutcome{}, fmt.Errorf("failed to resolve %s#%s: %w", name, tag, err)
 			}
 
-			return FunctionOutcome{
+			return dataprovider.FunctionOutcome{
 				Summary: fmt.Sprintf("resolved %s#%s to puuid %s (region %s)", player.Name, player.Tag, player.PUUID, player.Region),
 				Data: map[string]any{
 					"puuid":  player.PUUID,
@@ -84,24 +60,24 @@ func resolvePlayerFunction(ing *ingest.Service) Function {
 // syncMatchesFunction fetches and caches a player's matches from the
 // upstream Valorant API, either by a plain recency count or by a date
 // range - see ingest.SyncOptions.
-func syncMatchesFunction(ing *ingest.Service) Function {
-	return Function{
+func syncMatchesFunction(ing *ingest.Service) dataprovider.Function {
+	return dataprovider.Function{
 		Name: "sync_matches",
 		Description: "Fetch and cache a player's matches from the upstream Valorant API, populating matches and all related per-match tables " +
 			"(match_teams, match_players, rounds, round_player_stats, damage_events, kills, kill_assists, event_player_locations). " +
 			"The upstream API only exposes \"most recent N matches\" plus an offset - there is no native date filter - so when a date range " +
 			"is given this pages backward through history until it's covered, bounded by the count safety cap.",
-		Args: []ai.UpdateArg{
+		Args: []dataprovider.FunctionArg{
 			{Name: "player_tag", Type: "string", Description: "The player's Riot ID as name#tag, e.g. \"Orbest#NA1\".", Required: true},
 			{Name: "start_date", Type: "string", Description: "ISO-8601 date (e.g. \"2026-05-01\"), the earliest match start date to ensure is cached. Omit for a plain most-recent-matches sync.", Required: false},
 			{Name: "end_date", Type: "string", Description: "ISO-8601 date, the latest match start date to ensure is cached. Defaults to now if start_date is given.", Required: false},
 			{Name: "count", Type: "integer", Description: fmt.Sprintf("Safety cap on how many matches to fetch this call, up to %d. Defaults to %d.", maxSyncMatchesPerCall, defaultSyncMatchCount), Required: false},
 		},
-		Run: func(ctx context.Context, args map[string]any) (FunctionOutcome, error) {
+		Run: func(ctx context.Context, args map[string]any) (dataprovider.FunctionOutcome, error) {
 			playerTag, _ := args["player_tag"].(string)
 			name, tag, ok := splitRiotID(playerTag)
 			if !ok {
-				return FunctionOutcome{}, fmt.Errorf("sync_matches requires player_tag in the form name#tag, got %q", playerTag)
+				return dataprovider.FunctionOutcome{}, fmt.Errorf("sync_matches requires player_tag in the form name#tag, got %q", playerTag)
 			}
 
 			opts := ingest.SyncOptions{MaxMatches: defaultSyncMatchCount}
@@ -115,33 +91,33 @@ func syncMatchesFunction(ing *ingest.Service) Function {
 			if sd, ok := args["start_date"].(string); ok && sd != "" {
 				since, err := parseFlexibleDate(sd)
 				if err != nil {
-					return FunctionOutcome{}, fmt.Errorf("invalid start_date %q: %w", sd, err)
+					return dataprovider.FunctionOutcome{}, fmt.Errorf("invalid start_date %q: %w", sd, err)
 				}
 				opts.Since = &since
 			}
 			if ed, ok := args["end_date"].(string); ok && ed != "" {
 				until, err := parseFlexibleDate(ed)
 				if err != nil {
-					return FunctionOutcome{}, fmt.Errorf("invalid end_date %q: %w", ed, err)
+					return dataprovider.FunctionOutcome{}, fmt.Errorf("invalid end_date %q: %w", ed, err)
 				}
 				opts.Until = &until
 			}
 
 			player, err := ing.ResolvePlayer(ctx, name, tag)
 			if err != nil {
-				slog.Error("polyglot: sync_matches failed to resolve player", "name", name, "tag", tag, "error", err)
-				return FunctionOutcome{}, fmt.Errorf("failed to resolve %s#%s: %w", name, tag, err)
+				slog.Error("valorant: sync_matches failed to resolve player", "name", name, "tag", tag, "error", err)
+				return dataprovider.FunctionOutcome{}, fmt.Errorf("failed to resolve %s#%s: %w", name, tag, err)
 			}
 
 			coverage, err := ing.CheckCoverage(player, opts.Until)
 			if err != nil {
-				slog.Error("polyglot: sync_matches failed to check cache coverage", "name", name, "tag", tag, "error", err)
-				return FunctionOutcome{}, fmt.Errorf("failed to check cache coverage for %s#%s: %w", name, tag, err)
+				slog.Error("valorant: sync_matches failed to check cache coverage", "name", name, "tag", tag, "error", err)
+				return dataprovider.FunctionOutcome{}, fmt.Errorf("failed to check cache coverage for %s#%s: %w", name, tag, err)
 			}
 			if coverageSufficient(coverage, opts) {
-				slog.Info("polyglot: sync_matches skipped upstream sync, cache already covers request",
+				slog.Info("valorant: sync_matches skipped upstream sync, cache already covers request",
 					"name", name, "tag", tag, "puuid", player.PUUID, "cached_count", coverage.Count)
-				return FunctionOutcome{
+				return dataprovider.FunctionOutcome{
 					Summary: fmt.Sprintf("cache already covers this request for %s#%s (puuid %s) - %d matches cached, no upstream sync needed",
 						player.Name, player.Tag, player.PUUID, coverage.Count),
 					Data: map[string]any{
@@ -155,8 +131,8 @@ func syncMatchesFunction(ing *ingest.Service) Function {
 
 			result, err := ing.SyncPlayerMatches(ctx, player, opts)
 			if err != nil {
-				slog.Error("polyglot: sync_matches failed to sync", "name", name, "tag", tag, "error", err)
-				return FunctionOutcome{}, fmt.Errorf("failed to sync matches for %s#%s: %w", name, tag, err)
+				slog.Error("valorant: sync_matches failed to sync", "name", name, "tag", tag, "error", err)
+				return dataprovider.FunctionOutcome{}, fmt.Errorf("failed to sync matches for %s#%s: %w", name, tag, err)
 			}
 
 			summary := fmt.Sprintf("synced %d new matches (skipped %d already cached) for %s#%s, puuid %s",
@@ -171,7 +147,7 @@ func syncMatchesFunction(ing *ingest.Service) Function {
 				}
 			}
 
-			return FunctionOutcome{
+			return dataprovider.FunctionOutcome{
 				Summary: summary,
 				Data: map[string]any{
 					"puuid":             player.PUUID,

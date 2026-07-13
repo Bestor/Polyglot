@@ -35,7 +35,8 @@
       "WebFetch(domain:docs.henrikdev.xyz)",
       "mcp__polyglot__warm",
       "mcp__polyglot__query",
-      "Bash(git check-ignore *)"
+      "Bash(git check-ignore *)",
+      "Bash(./warm.sh)"
     ]
   }
 }

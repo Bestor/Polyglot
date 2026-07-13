@@ -3,11 +3,11 @@ package polyglot
 import (
 	"testing"
 
-	"val-analyzer/internal/ai"
+	"val-analyzer/internal/dataprovider"
 )
 
 func TestRequireArgs(t *testing.T) {
-	declared := []ai.UpdateArg{
+	declared := []dataprovider.FunctionArg{
 		{Name: "player_tag", Required: true},
 		{Name: "count", Required: false},
 	}

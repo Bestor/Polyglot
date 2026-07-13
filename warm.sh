@@ -9,6 +9,7 @@ curl -s -X POST http://localhost:8091/warm \
   -H "Authorization: Bearer $(grep '^API_AUTH_TOKEN=' .env | cut -d= -f2)" \
   -H "Content-Type: application/json" \
   -d '{
+    "datasource": "valorant",
     "function": "sync_matches",
     "args": {
       "player_tag": "OrBest#NA1",

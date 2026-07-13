@@ -9,8 +9,8 @@ import (
 	"log/slog"
 	"time"
 
-	"val-analyzer/internal/data_sources"
-	"val-analyzer/internal/store"
+	"val-analyzer/internal/providers/valorant/data_sources"
+	"val-analyzer/internal/providers/valorant/store"
 )
 
 // platform is currently always "pc" since that's the only platform the

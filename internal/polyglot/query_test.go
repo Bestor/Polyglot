@@ -33,3 +33,27 @@ func TestQueryResultToRows_Empty(t *testing.T) {
 		t.Fatalf("expected 0 rows, got %d", len(got))
 	}
 }
+
+func TestReservedTablePatternBlocksDatasources(t *testing.T) {
+	blocked := []string{
+		"SELECT * FROM datasources",
+		"select * from DataSources",
+		"SELECT   *   FROM   datasources",
+		"WITH x AS (SELECT * FROM datasources) SELECT * FROM x",
+	}
+	for _, sql := range blocked {
+		if !reservedTablePattern.MatchString(sql) {
+			t.Errorf("expected reservedTablePattern to match %q", sql)
+		}
+	}
+
+	allowed := []string{
+		"SELECT * FROM players",
+		"SELECT * FROM matches WHERE match_id = 'datasources_1'", // substring within a token doesn't count
+	}
+	for _, sql := range allowed {
+		if reservedTablePattern.MatchString(sql) {
+			t.Errorf("expected reservedTablePattern NOT to match %q", sql)
+		}
+	}
+}

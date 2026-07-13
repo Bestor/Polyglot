@@ -12,8 +12,14 @@ info:
     (SQLite via PocketBase today).
 
     polyglot has no AI/reasoning logic of its own - it is a pure data API. A separate MCP
-    server wraps these three endpoints as tools for an AI model to call when answering a
-    user's question, and hosts its own `/ask` endpoint for a CLI client.
+    server wraps these endpoints as tools for an AI model to call when answering a user's
+    question.
+
+    polyglot also has no built-in domain knowledge: every table and every `/warm` function
+    comes from a DataProvider (see `internal/dataprovider`) onboarded at runtime via
+    `POST /datasources`. Valorant is the DataProvider that ships with this repo, but the
+    same API can host other domains (e.g. NFL, chess.com) as additional compiled-in
+    provider types are added and onboarded.
 
 servers:
   - url: http://localhost:8090
@@ -89,6 +95,7 @@ paths:
             schema:
               $ref: "#/components/schemas/WarmRequest"
             example:
+              datasource: valorant
               function: sync_matches
               args:
                 player_tag: "OrBest#NA1"
@@ -145,6 +152,7 @@ paths:
                 tables:
                   - name: players
                     description: "Cached Riot account identities."
+                    datasource: valorant
                     columns:
                       - name: puuid
                         type: text
@@ -155,6 +163,7 @@ paths:
                 functions:
                   - name: resolve_player
                     description: "Resolve a Riot ID (name#tag) into a cached player identity."
+                    datasource: valorant
                     args:
                       - name: name
                         type: string
@@ -166,6 +175,7 @@ paths:
                         description: "Riot ID tag, after the #."
                   - name: sync_matches
                     description: "Fetch and cache a player's matches from the upstream Valorant API."
+                    datasource: valorant
                     args:
                       - name: player_tag
                         type: string
@@ -185,6 +195,89 @@ paths:
                         description: "Safety cap on how many matches to fetch this call."
         "401":
           $ref: "#/components/responses/Unauthorized"
+
+  /datasources:
+    get:
+      operationId: listDatasources
+      summary: List available provider types and active datasources
+      description: |
+        Describes every compiled-in DataProvider type (its config schema, for onboarding) and
+        every currently active datasource instance (its tables and functions). This is the
+        discovery mechanism for what can be onboarded and what already has been, without
+        reading polyglot's source.
+      responses:
+        "200":
+          description: Current provider types and active datasources.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatasourcesResponse"
+              example:
+                available_types:
+                  - type: valorant
+                    config:
+                      - name: henrik_api_key
+                        type: string
+                        required: true
+                        secret: true
+                        description: "HenrikDev API key."
+                      - name: henrik_base_url
+                        type: string
+                        required: false
+                        secret: false
+                        description: "Base URL of the HenrikDev API. Defaults to https://api.henrikdev.xyz."
+                active:
+                  - type: valorant
+                    tables: [players, seasons, maps, matches]
+                    functions: [resolve_player, sync_matches]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: onboardDatasource
+      summary: Onboard (or reconfigure) a datasource
+      description: |
+        Validates config against the named provider type's config schema, ensures its tables
+        exist (creating any that don't yet - see DataProvider in internal/dataprovider),
+        activates it, and persists the registration so it survives a restart. Re-onboarding an
+        already-active type is an idempotent upsert: its stored config is replaced and a fresh
+        instance is bound.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OnboardRequest"
+            example:
+              type: valorant
+              config:
+                henrik_api_key: "..."
+      responses:
+        "200":
+          description: Datasource onboarded successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OnboardResponse"
+              example:
+                type: valorant
+                tables: [players, seasons, maps, matches]
+                functions: [resolve_player, sync_matches]
+                config:
+                  henrik_api_key: "***"
+        "400":
+          description: Unknown provider type, or missing/invalid required config field.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: One of this provider's tables is already owned by a different active datasource.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
 components:
   securitySchemes:
@@ -243,8 +336,12 @@ components:
 
     WarmRequest:
       type: object
-      required: [function, args]
+      required: [datasource, function, args]
       properties:
+        datasource:
+          type: string
+          description: The active datasource (provider type) to invoke the function on, per GET /datasources.
+          example: valorant
         function:
           type: string
           description: Name of a function advertised by GET /metadata's `functions` list.
@@ -283,12 +380,15 @@ components:
 
     TableDescription:
       type: object
-      required: [name, columns]
+      required: [name, datasource, columns]
       properties:
         name:
           type: string
         description:
           type: string
+        datasource:
+          type: string
+          description: The datasource (provider type) this table belongs to.
         columns:
           type: array
           items:
@@ -310,12 +410,15 @@ components:
 
     FunctionDescription:
       type: object
-      required: [name, args]
+      required: [name, datasource, args]
       properties:
         name:
           type: string
         description:
           type: string
+        datasource:
+          type: string
+          description: The datasource (provider type) this function belongs to.
         args:
           type: array
           items:
@@ -333,3 +436,91 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/FunctionDescription"
+
+    ConfigFieldDescription:
+      type: object
+      required: [name, type, required, secret]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          description: A JSON-schema type, e.g. "string" | "integer" | "boolean".
+        description:
+          type: string
+        required:
+          type: boolean
+        secret:
+          type: boolean
+          description: If true, this field's value is masked in onboarding responses and never logged.
+
+    ProviderTypeDescription:
+      type: object
+      required: [type, config]
+      properties:
+        type:
+          type: string
+        config:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigFieldDescription"
+
+    ActiveDatasourceDescription:
+      type: object
+      required: [type, tables, functions]
+      properties:
+        type:
+          type: string
+        tables:
+          type: array
+          items:
+            type: string
+        functions:
+          type: array
+          items:
+            type: string
+
+    DatasourcesResponse:
+      type: object
+      required: [available_types, active]
+      properties:
+        available_types:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderTypeDescription"
+        active:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActiveDatasourceDescription"
+
+    OnboardRequest:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          description: A provider type from GET /datasources's `available_types` list.
+          example: valorant
+        config:
+          type: object
+          description: Provider-specific config; see GET /datasources for each provider type's config schema.
+          additionalProperties: true
+
+    OnboardResponse:
+      type: object
+      required: [type, tables, functions]
+      properties:
+        type:
+          type: string
+        tables:
+          type: array
+          items:
+            type: string
+        functions:
+          type: array
+          items:
+            type: string
+        config:
+          type: object
+          description: The config that was stored; fields marked secret in ConfigFieldDescription are masked.
+          additionalProperties: true

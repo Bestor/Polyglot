@@ -10,7 +10,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/types"
 
-	"val-analyzer/internal/data_sources"
+	"val-analyzer/internal/providers/valorant/data_sources"
 )
 
 type MatchStore struct {

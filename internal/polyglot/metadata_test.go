@@ -6,7 +6,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tests"
 
-	"val-analyzer/internal/ai"
+	"val-analyzer/internal/dataprovider"
 	_ "val-analyzer/internal/migrations"
 )
 
@@ -21,18 +21,32 @@ func TestBuildMetadata(t *testing.T) {
 		t.Fatalf("running app migrations: %v", err)
 	}
 
-	functions := []Function{
+	active := []ActiveInstance{
 		{
-			Name:        "resolve_player",
-			Description: "resolve a player",
-			Args: []ai.UpdateArg{
-				{Name: "name", Type: "string", Required: true},
-				{Name: "tag", Type: "string", Required: true},
+			Type: "valorant",
+			Tables: []dataprovider.TableSpec{
+				{
+					Name:        "players",
+					Description: "cached players",
+					Fields: []dataprovider.FieldSpec{
+						{Name: "riot_puuid", Description: "stable id"},
+					},
+				},
+			},
+			Functions: []dataprovider.Function{
+				{
+					Name:        "resolve_player",
+					Description: "resolve a player",
+					Args: []dataprovider.FunctionArg{
+						{Name: "name", Type: "string", Required: true},
+						{Name: "tag", Type: "string", Required: true},
+					},
+				},
 			},
 		},
 	}
 
-	metadata, err := buildMetadata(app, functions)
+	metadata, err := buildMetadata(app, active)
 	if err != nil {
 		t.Fatalf("buildMetadata: %v", err)
 	}
@@ -50,12 +64,18 @@ func TestBuildMetadata(t *testing.T) {
 	if playersTable == nil {
 		t.Fatal("players table missing from metadata")
 	}
+	if playersTable.Datasource != "valorant" {
+		t.Errorf("expected players table tagged with datasource %q, got %q", "valorant", playersTable.Datasource)
+	}
 
 	if len(metadata.Functions) != 1 {
 		t.Fatalf("expected 1 function, got %d", len(metadata.Functions))
 	}
 	if metadata.Functions[0].Name != "resolve_player" {
 		t.Errorf("expected resolve_player, got %q", metadata.Functions[0].Name)
+	}
+	if metadata.Functions[0].Datasource != "valorant" {
+		t.Errorf("expected function tagged with datasource %q, got %q", "valorant", metadata.Functions[0].Datasource)
 	}
 	if len(metadata.Functions[0].Args) != 2 {
 		t.Fatalf("expected 2 args, got %d", len(metadata.Functions[0].Args))

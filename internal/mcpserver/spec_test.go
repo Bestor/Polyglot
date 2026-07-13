@@ -21,8 +21,8 @@ func TestLoadOperations(t *testing.T) {
 		byName[op.Name] = op
 	}
 
-	if len(ops) != 3 {
-		t.Fatalf("expected 3 operations, got %d: %+v", len(ops), byName)
+	if len(ops) != 5 {
+		t.Fatalf("expected 5 operations, got %d: %+v", len(ops), byName)
 	}
 
 	query, ok := byName["query"]
