@@ -192,8 +192,8 @@ components:
       type: http
       scheme: bearer
       description: |
-        Static shared-secret bearer token, constant-time compared server-side (same scheme as
-        val-analyzer's existing internal/api/auth.go). Not a per-user identity.
+        Static shared-secret bearer token, constant-time compared server-side. Not a per-user
+        identity.
 
   responses:
     Unauthorized:

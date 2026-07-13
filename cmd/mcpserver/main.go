@@ -44,10 +44,12 @@ func main() {
 
 	// Stateless: true since every tool call is an independent, one-shot
 	// proxy to polyglot - there's no server->client interaction to keep a
-	// session open for.
+	// session open for. JSONResponse: true returns a single application/json
+	// response per call instead of text/event-stream framing, since callers
+	// here don't need streaming or server-initiated messages either.
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return server
-	}, &mcp.StreamableHTTPOptions{Stateless: true})
+	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", handler)

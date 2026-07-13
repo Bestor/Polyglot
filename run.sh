@@ -1,16 +1,9 @@
 #!/bin/sh
-# Runs the full val-analyzer stack - the main server, the standalone
-# polyglot Data API, and its MCP server - all with DEBUG=true (verbose
-# slog output: full SQL text, request args, response bodies; see
-# internal/logging and .env.example). Pass --build (or -b) to rebuild the
-# image first; otherwise the existing local image is reused.
-#
-# server and polyglot each get their own PocketBase data volume rather
-# than sharing one: PocketBase isn't designed for two app instances to
-# write to the same SQLite data dir concurrently, so polyglot/mcpserver
-# start with their own independently-warmed cache, separate from
-# server's. Warm it via polyglot's own /warm endpoint (or an MCP tool
-# call) rather than expecting server's cache to already be there.
+# Runs the val-analyzer stack - the polyglot Data API and its MCP server -
+# both with DEBUG=true (verbose slog output: full SQL text, request args,
+# response bodies; see internal/logging and .env.example). Pass --build
+# (or -b) to rebuild the image first; otherwise the existing local image
+# is reused.
 set -e
 
 IMAGE=val-analyzer
@@ -29,14 +22,7 @@ fi
 
 docker network create "$NETWORK" >/dev/null 2>&1 || true
 
-docker rm -f val-analyzer val-analyzer-polyglot val-analyzer-mcpserver >/dev/null 2>&1 || true
-
-docker run -d --name val-analyzer --network "$NETWORK" \
-  -p 8090:8090 \
-  --env-file .env \
-  -e DEBUG=true \
-  -v val-analyzer-data:/app/pb_data \
-  "$IMAGE"
+docker rm -f val-analyzer-polyglot val-analyzer-mcpserver >/dev/null 2>&1 || true
 
 docker run -d --name val-analyzer-polyglot --network "$NETWORK" \
   -p 8091:8091 \
@@ -58,7 +44,6 @@ docker run -d --name val-analyzer-mcpserver --network "$NETWORK" \
   --entrypoint /app/mcpserver \
   "$IMAGE"
 
-echo "val-analyzer running at http://localhost:8090          (docker logs -f val-analyzer)"
-echo "polyglot      running at http://localhost:8091          (docker logs -f val-analyzer-polyglot)"
-echo "mcpserver     running at http://localhost:8092/mcp      (docker logs -f val-analyzer-mcpserver)"
-echo "all three started with DEBUG=true - full SQL/args/response bodies will show up in their logs"
+echo "polyglot  running at http://localhost:8091          (docker logs -f val-analyzer-polyglot)"
+echo "mcpserver running at http://localhost:8092/mcp      (docker logs -f val-analyzer-mcpserver)"
+echo "both started with DEBUG=true - full SQL/args/response bodies will show up in their logs"

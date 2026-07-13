@@ -32,7 +32,10 @@
       "Read(//Users/joshdale/go/pkg/mod/github.com/pocketbase/pocketbase@v0.39.5/core/**)",
       "Bash(grep -rn \"app.DB\\(\\).Select\\\\|\\\\.DB\\(\\)\\\\.Select\\(\" /Users/joshdale/go/pkg/mod/github.com/pocketbase/pocketbase@v0.39.5/core/*.go 2>/dev/null | grep -v \"_test.go\" | head -10)",
       "WebFetch(domain:api.henrikdev.xyz)",
-      "WebFetch(domain:docs.henrikdev.xyz)"
+      "WebFetch(domain:docs.henrikdev.xyz)",
+      "mcp__polyglot__warm",
+      "mcp__polyglot__query",
+      "Bash(git check-ignore *)"
     ]
   }
 }

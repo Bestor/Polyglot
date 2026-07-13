@@ -1,6 +1,5 @@
 // Package logging configures the process-wide slog default logger shared
-// by all of val-analyzer's binaries (cmd/server, cmd/polyglot,
-// cmd/mcpserver).
+// by all of val-analyzer's binaries (cmd/polyglot, cmd/mcpserver).
 package logging
 
 import (

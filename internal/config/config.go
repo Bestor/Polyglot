@@ -15,8 +15,6 @@ type Config struct {
 	PBDataDir          string
 	RateLimitPerMinute int
 	RateLimitBurst     int
-	AIProvider         string
-	AnthropicAPIKey    string
 	APIAuthToken       string
 	SuperuserEmail     string
 	SuperuserPassword  string
@@ -32,8 +30,6 @@ func Load() (Config, error) {
 		HenrikBaseURL:      getEnvDefault("HENRIK_BASE_URL", "https://api.henrikdev.xyz"),
 		Port:               getEnvDefault("PORT", "8090"),
 		PBDataDir:          getEnvDefault("PB_DATA_DIR", "pb_data"),
-		AIProvider:         getEnvDefault("AI_PROVIDER", "mock"),
-		AnthropicAPIKey:    os.Getenv("ANTHROPIC_API_KEY"),
 		APIAuthToken:       os.Getenv("API_AUTH_TOKEN"),
 		SuperuserEmail:     os.Getenv("SUPERUSER_EMAIL"),
 		SuperuserPassword:  os.Getenv("SUPERUSER_PASSWORD"),
@@ -56,9 +52,6 @@ func Load() (Config, error) {
 	}
 	if cfg.APIAuthToken == "" {
 		return Config{}, fmt.Errorf("API_AUTH_TOKEN is required")
-	}
-	if cfg.AIProvider == "claude" && cfg.AnthropicAPIKey == "" {
-		return Config{}, fmt.Errorf("ANTHROPIC_API_KEY is required when AI_PROVIDER=claude")
 	}
 	if (cfg.SuperuserEmail == "") != (cfg.SuperuserPassword == "") {
 		return Config{}, fmt.Errorf("SUPERUSER_EMAIL and SUPERUSER_PASSWORD must be set together")
