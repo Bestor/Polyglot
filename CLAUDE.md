@@ -10,11 +10,12 @@ client rather than in-process. Riot/HenrikDev API calls are severely rate-limite
 local caching (in an embedded PocketBase) is the core design constraint driving most of the
 architecture below.
 
-The stack is two binaries: **polyglot**, a standalone Data API (`GET /query`, `POST /warm`,
-`GET /metadata`, `GET`/`POST /datasources`) backed by PocketBase, and **mcpserver**, an MCP server
+The stack is three binaries: **polyglot**, a standalone Data API (`GET /query`, `POST /warm`,
+`GET /metadata`, `GET`/`POST /datasources`) backed by PocketBase; **mcpserver**, an MCP server
 generated from polyglot's OpenAPI spec that proxies each tool call to a running polyglot instance
-over HTTP. An MCP client (e.g. a future Discord bot) drives the actual question-answering by
-calling mcpserver's tools.
+over HTTP; and **discordbot**, an MCP client that drives the actual question-answering - it
+connects to mcpserver, hands its tools to Claude, and lets Claude's tool-use loop decide which
+ones to call to answer a Discord `/ask` question.
 
 polyglot itself has no built-in domain knowledge - every table and `/warm` function comes from a
 `DataProvider` (`internal/dataprovider`) onboarded at runtime via `POST /datasources`. Valorant is
@@ -58,16 +59,20 @@ Run the stack in Docker:
 ./run.sh            # run the existing local image without rebuilding
 docker logs -f val-analyzer-polyglot
 docker logs -f val-analyzer-mcpserver
+docker logs -f val-analyzer-discordbot
 ```
 
-`run.sh` builds one image (containing both the `polyglot` and `mcpserver` binaries) and runs each
-as its own container on a shared Docker network, with its own PocketBase data volume — PocketBase
-isn't designed for two app instances to write to the same SQLite data dir concurrently. Requires a
-populated `.env` (see `.env.example`) — only `API_AUTH_TOKEN` is required. `HENRIK_API_KEY` is
-optional: if set, polyglot auto-onboards a `valorant` datasource on boot; if unset, polyglot still
-boots fine with zero datasources onboarded (onboard any datasource, including `valorant`, later via
-`POST /datasources`). `SUPERUSER_EMAIL`/`SUPERUSER_PASSWORD` (set together or not at all)
-auto-provision the PocketBase admin UI superuser on boot.
+`run.sh` builds one image (containing the `polyglot`, `mcpserver`, and `discordbot` binaries) and
+runs each as its own container on a shared Docker network, with polyglot/mcpserver each getting
+their own PocketBase data volume — PocketBase isn't designed for two app instances to write to the
+same SQLite data dir concurrently. Requires a populated `.env` (see `.env.example`) — only
+`API_AUTH_TOKEN` is required. `HENRIK_API_KEY` is optional: if set, polyglot auto-onboards a
+`valorant` datasource on boot; if unset, polyglot still boots fine with zero datasources onboarded
+(onboard any datasource, including `valorant`, later via `POST /datasources`).
+`SUPERUSER_EMAIL`/`SUPERUSER_PASSWORD` (set together or not at all) auto-provision the PocketBase
+admin UI superuser on boot. `DISCORD_BOT_TOKEN` is also optional: `run.sh` skips the
+`val-analyzer-discordbot` container entirely if it's unset, since `cmd/discordbot` fails fast
+without it.
 
 Manual smoke test against a running container:
 
@@ -144,10 +149,23 @@ per-provider concern (the upstream API each provider talks to has its own limits
 `openapi/polyglot.yaml` at load time into one `Operation` per spec operation (so tool schemas can
 never drift from polyglot's actual REST contract), `server.go` registers one MCP tool per
 `Operation` and proxies each call to a running polyglot instance over HTTP via `client.go`. It has
-no data logic of its own — an MCP client (e.g. a future Discord bot) is what actually reasons about
-a question, deciding which tools to call and how to interpret the results. It needed zero code
+no data logic of its own — the MCP client (`cmd/discordbot`) is what actually reasons about a
+question, deciding which tools to call and how to interpret the results. It needed zero code
 changes for the `DataProvider` rework - it's entirely spec-driven, so the two new `/datasources`
 operations and the `datasource` field additions just show up as new/changed tool schemas.
+
+**`cmd/discordbot`** (`internal/discordbot`) is the MCP client that does the actual
+question-answering: `mcpclient.go` connects to a running `mcpserver` over Streamable HTTP
+(`mcp.NewClient` + `mcp.StreamableClientTransport`, the go-sdk's real network client - not the
+in-memory transport `internal/mcpserver/server_test.go` uses for testing), `tools.go` converts
+every MCP tool it lists into an Anthropic tool definition (MCP's `InputSchema` is already JSON
+Schema, so this is a field reshape, not a schema rewrite), and `agent.go` runs the manual
+tool-use loop: send the question + tool defs to Claude, execute any `tool_use` blocks via
+`mcpSession.CallTool`, feed `tool_result`s back, repeat (capped at `maxToolIterations`) until
+Claude returns a final answer. `bot.go` wires this to a single Discord slash command, `/ask`,
+deferring the interaction response since the tool-use loop routinely takes longer than Discord's
+~3s initial-response window. Defaults to `claude-opus-4-8` (`ANTHROPIC_MODEL` overrides it) -
+never silently downgraded to a cheaper model.
 
 **`internal/ai`** is now scoped to exactly one thing: read-only SQL execution.
 `ai.NewReadOnlyExecutor` is the actual security boundary behind `GET /query`: it opens a *second*
