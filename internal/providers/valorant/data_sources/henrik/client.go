@@ -312,6 +312,10 @@ func toKillEvent(k matchKillEvent) data_sources.KillEvent {
 	}
 }
 
+// zeroUUID is HenrikDev's sentinel for "no parent" (an episode's ParentID)
+// rather than an omitted/empty field.
+const zeroUUID = "00000000-0000-0000-0000-000000000000"
+
 func (c *Client) GetSeasons(ctx context.Context) ([]data_sources.Season, error) {
 	var resp contentResponse
 	query := url.Values{"locale": {"en-US"}}
@@ -319,12 +323,17 @@ func (c *Client) GetSeasons(ctx context.Context) ([]data_sources.Season, error) 
 		return nil, err
 	}
 
-	seasons := make([]data_sources.Season, 0, len(resp.Seasons))
-	for _, s := range resp.Seasons {
+	seasons := make([]data_sources.Season, 0, len(resp.Data.Acts))
+	for _, a := range resp.Data.Acts {
+		parentID := a.ParentID
+		if parentID == zeroUUID {
+			parentID = ""
+		}
 		seasons = append(seasons, data_sources.Season{
-			SeasonID:       s.ID,
-			ParentSeasonID: s.ParentID,
-			IsActive:       s.IsActive,
+			SeasonID:       a.ID,
+			ShortCode:      a.Name,
+			ParentSeasonID: parentID,
+			IsActive:       a.IsActive,
 		})
 	}
 	return seasons, nil

@@ -213,10 +213,18 @@ type matchKillEvent struct {
 	PlayerLocations   []wirePlayerLocation `json:"player_locations"`
 }
 
+// contentResponse models /valorant/v1/content. Confusingly, HenrikDev calls
+// seasons/acts "acts" here (both episodes and their child acts show up in
+// the same flat list, disambiguated by Type) - there is no "seasons" key,
+// verified against a real response captured during development.
 type contentResponse struct {
-	Seasons []struct {
-		ID       string `json:"id"`
-		ParentID string `json:"parentID"`
-		IsActive bool   `json:"isActive"`
-	} `json:"seasons"`
+	Data struct {
+		Acts []struct {
+			ID       string `json:"id"`
+			ParentID string `json:"parentId"`
+			Type     string `json:"type"` // "episode" | "act"
+			Name     string `json:"name"` // e.g. "V26", "ACT VI" - short, human-readable
+			IsActive bool   `json:"isActive"`
+		} `json:"acts"`
+	} `json:"data"`
 }

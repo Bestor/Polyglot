@@ -21,6 +21,32 @@ const maxSyncMatchesPerCall = 100
 // defaultSyncMatchCount is used when a sync_matches call doesn't specify count.
 const defaultSyncMatchCount = 50
 
+// syncSeasonsFunction fetches the full competitive season/act list from
+// the upstream Valorant API and caches it, so matches.season_id_raw can be
+// resolved to a human-curated seasons row. Takes no args - it's always a
+// full refresh, safe to call repeatedly.
+func syncSeasonsFunction(ing *ingest.Service) dataprovider.Function {
+	return dataprovider.Function{
+		Name: "sync_seasons",
+		Description: "Fetch the full list of competitive seasons/acts from the upstream Valorant API and cache them, so matches.season_id_raw " +
+			"can be resolved to a seasons row. Always a full refresh (the season list is small and infrequently updated) - safe to call repeatedly.",
+		Run: func(ctx context.Context, args map[string]any) (dataprovider.FunctionOutcome, error) {
+			result, err := ing.SyncSeasons(ctx)
+			if err != nil {
+				slog.Error("valorant: sync_seasons failed", "error", err)
+				return dataprovider.FunctionOutcome{}, fmt.Errorf("failed to sync seasons: %w", err)
+			}
+
+			return dataprovider.FunctionOutcome{
+				Summary: fmt.Sprintf("synced %d seasons", result.Count),
+				Data: map[string]any{
+					"count": result.Count,
+				},
+			}, nil
+		},
+	}
+}
+
 // resolvePlayerFunction lets a caller resolve a Riot ID (name#tag) into a
 // cached player identity, without necessarily syncing any match history.
 func resolvePlayerFunction(ing *ingest.Service) dataprovider.Function {

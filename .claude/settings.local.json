@@ -36,7 +36,8 @@
       "mcp__polyglot__warm",
       "mcp__polyglot__query",
       "Bash(git check-ignore *)",
-      "Bash(./warm.sh)"
+      "Bash(./warm.sh)",
+      "Bash(./go-docker.sh gofmt *)"
     ]
   }
 }

@@ -252,3 +252,29 @@ func (s *Service) SyncMoreByPUUID(ctx context.Context, puuid string, opts SyncOp
 
 	return s.SyncPlayerMatches(ctx, player, opts)
 }
+
+// SyncSeasonsResult reports how many seasons were fetched/upserted.
+type SyncSeasonsResult struct {
+	Count int
+}
+
+// SyncSeasons fetches the full season/act list from the upstream data
+// source and upserts each into the cache, so matches.season_id_raw can be
+// resolved to a seasons row. Unlike SyncPlayerMatches, this is always a
+// full, unconditional refresh - the season list is small and infrequently
+// updated, so there's no coverage/incremental logic to skip redundant
+// upstream calls.
+func (s *Service) SyncSeasons(ctx context.Context) (SyncSeasonsResult, error) {
+	seasons, err := s.source.GetSeasons(ctx)
+	if err != nil {
+		return SyncSeasonsResult{}, err
+	}
+
+	for _, season := range seasons {
+		if _, err := s.seasons.Upsert(season); err != nil {
+			return SyncSeasonsResult{}, err
+		}
+	}
+
+	return SyncSeasonsResult{Count: len(seasons)}, nil
+}
