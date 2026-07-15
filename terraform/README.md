@@ -69,10 +69,14 @@ If it's drifted, update the `image` value in `terraform/droplet.tf` to match bef
 
 ## 6. Add every secret to GitHub
 
-Repo -> **Settings -> Secrets and variables -> Actions**. I'd recommend creating a `production`
-Environment first (Settings -> Environments -> New environment) and adding these there rather than
-as plain repo secrets - costs nothing extra and leaves room to add required-reviewer protection on
-deploys later without changing the workflow.
+`.github/workflows/deploy.yml`'s `provision` and `deploy` jobs both declare `environment:
+production`, so these secrets **must** go under a GitHub Environment named exactly `production`
+(Settings -> Environments -> New environment -> name it `production` -> add secrets there), not
+plain repository secrets - a job only sees Environment secrets if it explicitly declares that
+environment, and GitHub silently resolves an unset/wrongly-scoped secret to an empty string rather
+than failing the workflow, which is a confusing failure mode if you get this wrong (surfaces later,
+as an opaque Terraform/AWS credential error). This also leaves room to add required-reviewer
+protection on deploys later without touching the workflow.
 
 - [ ] `DIGITALOCEAN_TOKEN` (step 3)
 - [ ] `SPACES_ACCESS_KEY_ID` (step 2)
