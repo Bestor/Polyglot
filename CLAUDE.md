@@ -97,6 +97,47 @@ keeping a fresh container's schema up to date, not just an ops convenience. The 
 below); Valorant's 15 domain tables are the rest, created once and never touched by the dynamic
 onboarding path described next.
 
+## Deployment (CI/CD)
+
+`.github/workflows/deploy.yml` runs on every push to `main`: **build** (test, then build+push the
+image to `ghcr.io/bestor/valorantanalyzer` under both `:latest` and `:sha-<commit>` tags) ->
+**provision** (`terraform apply` in `terraform/`, guaranteeing a DigitalOcean droplet/volume/firewall
+exist matching code) -> **deploy** (SSH in, `git pull` + `docker compose pull` + `docker compose up
+-d`). All three jobs are required, in that order (`needs:`), and a `concurrency` group serializes
+overlapping runs.
+
+**`terraform/`** is deliberately idempotent, not destroy-and-recreate-on-every-push: `main.tf`'s
+`digitalocean_droplet.app` only actually gets recreated by Terraform when its own definition
+changes (size/region/image, or its `user_data` content - see below), so a normal push where nothing
+infra-level changed is a fast no-op `apply`, and `deploy`'s SSH step is what actually ships each
+commit. State lives in a DigitalOcean Space (`terraform/main.tf`'s `s3` backend block, pointed at a
+DO Spaces endpoint) rather than Terraform Cloud - one provider to manage - with `use_lockfile = true`
+for real state locking (no DynamoDB-equivalent needed). `volume.tf`'s `digitalocean_volume` is a
+separate, `prevent_destroy`-protected resource specifically so PocketBase's SQLite cache - the whole
+point of this project's design - survives even a real droplet recreate; `docker-compose.yml`'s
+`polyglot` service points its `pb_data` volume at that attached disk in production via
+`PB_DATA_HOST_PATH` (unset locally, so local dev is unaffected).
+
+**Secrets never live on the droplet by hand** - every app secret (`HENRIK_API_KEY`,
+`DISCORD_BOT_TOKEN`, etc.) is a GitHub Actions secret, flows into Terraform as a `TF_VAR_*`, and
+gets templated into `cloud-init.yaml.tftpl` (which writes the droplet's actual `.env` on first
+boot). Since `user_data` is immutable post-boot for any cloud-init-based resource, rotating a
+secret's value naturally forces Terraform to recreate the droplet on the next push (byte-identical
+`user_data` otherwise means no diff, hence no recreate) - this is what makes rotation "just work"
+without a separate mechanism to push updated secrets to an already-running droplet.
+
+**Every service in `docker-compose.yml` declares both `build: .` and `image:
+ghcr.io/bestor/valorantanalyzer:latest`** - local dev (`run.sh --build`) builds and tags locally
+under that name with zero registry interaction; the droplet's `docker compose pull` fetches the same
+tag from GHCR instead of building (small droplet, no need to compile 4 Go binaries on it). The GHCR
+package is public (the image only ever contains compiled binaries/`openapi/`/the secret-free
+`players.txt` - never a secret), so the pull needs no registry auth on the droplet side.
+
+Nothing besides SSH (22) is reachable on the droplet's public IP (`terraform/droplet.tf`'s
+`digitalocean_firewall`) - `mcpserver`/`polyglot` are only ever reached over the internal Compose
+network by `discordbot`/`cachewarmer`, and `discordbot` itself only makes outbound connections, so
+none of this stack needs to be internet-facing.
+
 ## Architecture
 
 **`internal/dataprovider`** is the generic plugin contract polyglot hosts data sources through -

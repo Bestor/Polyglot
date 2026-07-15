@@ -2,9 +2,17 @@
 # (ports, volumes, inter-service URLs, the optional discordbot profile) -
 # run.sh just calls `docker compose up`. All secrets/config values come from
 # .env (see .env.example); this file only sets what varies per service.
+#
+# Every service declares both `build: .` and `image: ghcr.io/...` - local
+# dev (`run.sh --build`, i.e. `docker compose up --build`) builds and tags
+# locally under that same name with zero registry interaction, while the
+# deploy pipeline's `docker compose pull` (see .github/workflows/deploy.yml)
+# fetches that exact tag from GHCR instead of building - same file, no
+# prod-specific overlay needed.
 services:
   polyglot:
     build: .
+    image: ghcr.io/bestor/valorantanalyzer:latest
     container_name: val-analyzer-polyglot
     entrypoint: ["/app/polyglot"]
     env_file: .env
@@ -14,10 +22,16 @@ services:
     ports:
       - "8091:8091"
     volumes:
-      - polyglot-data:/app/pb_data
+      # Unset (local dev): resolves to the named volume below, unchanged
+      # behavior. Set to a host path (production, via cloud-init-written
+      # .env): becomes a bind mount to the persistent DigitalOcean Volume,
+      # so PocketBase's cache survives a droplet recreate - see
+      # terraform/volume.tf and terraform/cloud-init.yaml.tftpl.
+      - ${PB_DATA_HOST_PATH:-polyglot-data}:/app/pb_data
 
   mcpserver:
     build: .
+    image: ghcr.io/bestor/valorantanalyzer:latest
     container_name: val-analyzer-mcpserver
     entrypoint: ["/app/mcpserver"]
     env_file: .env
@@ -34,8 +48,10 @@ services:
   # Only starts when the "discordbot" profile is active - set
   # COMPOSE_PROFILES=discordbot in .env once DISCORD_BOT_TOKEN and
   # ANTHROPIC_API_KEY are set, since cmd/discordbot fails fast without them.
+  # (Production's cloud-init-written .env sets this, so it's on by default there.)
   discordbot:
     build: .
+    image: ghcr.io/bestor/valorantanalyzer:latest
     container_name: val-analyzer-discordbot
     entrypoint: ["/app/discordbot"]
     profiles: ["discordbot"]
@@ -52,6 +68,7 @@ services:
   # for every player listed in the bind-mounted players.txt.
   cachewarmer:
     build: .
+    image: ghcr.io/bestor/valorantanalyzer:latest
     container_name: val-analyzer-cachewarmer
     entrypoint: ["/app/cachewarmer"]
     env_file: .env

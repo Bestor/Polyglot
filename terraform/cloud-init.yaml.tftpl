@@ -1,0 +1,27 @@
+#cloud-config
+# Runs once on first boot (and again on the rare real droplet recreate).
+# Idempotent throughout: the volume format check and fstab entry are both
+# guarded so that reattaching an already-initialized volume (the normal case
+# on a recreate, since the volume itself is prevent_destroy-protected in
+# Terraform) never wipes existing PocketBase data, and the git
+# clone/pull step works whether /opt/val-analyzer already exists or not.
+runcmd:
+  - [ sh, -c, "blkid /dev/disk/by-id/scsi-0DO_Volume_val-analyzer-data || mkfs.ext4 -F /dev/disk/by-id/scsi-0DO_Volume_val-analyzer-data" ]
+  - mkdir -p /mnt/val-analyzer-data
+  - mount /dev/disk/by-id/scsi-0DO_Volume_val-analyzer-data /mnt/val-analyzer-data
+  - [ sh, -c, "grep -q val-analyzer-data /etc/fstab || echo '/dev/disk/by-id/scsi-0DO_Volume_val-analyzer-data /mnt/val-analyzer-data ext4 defaults,nofail,discard 0 0' >> /etc/fstab" ]
+  - mkdir -p /mnt/val-analyzer-data/pb_data
+  - [ sh, -c, "test -d /opt/val-analyzer/.git && (cd /opt/val-analyzer && git pull) || git clone --branch main https://github.com/Bestor/ValorantAnalyzer.git /opt/val-analyzer" ]
+  - |
+    cat > /opt/val-analyzer/.env <<'EOF'
+    API_AUTH_TOKEN=${api_auth_token}
+    HENRIK_API_KEY=${henrik_api_key}
+    DISCORD_BOT_TOKEN=${discord_bot_token}
+    ANTHROPIC_API_KEY=${anthropic_api_key}
+    SUPERUSER_EMAIL=${superuser_email}
+    SUPERUSER_PASSWORD=${superuser_password}
+    COMPOSE_PROFILES=discordbot
+    PB_DATA_HOST_PATH=/mnt/val-analyzer-data/pb_data
+    DEBUG=false
+    EOF
+  - [ sh, -c, "cd /opt/val-analyzer && docker compose pull && docker compose up -d" ]
