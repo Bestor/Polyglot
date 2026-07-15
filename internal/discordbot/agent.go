@@ -15,6 +15,20 @@ import (
 // internal/providers/valorant/ingest).
 const maxToolIterations = 8
 
+// systemPrompt reinforces, at the whole-conversation level, the same
+// warm-tool restriction openapi/polyglot.yaml's "warm" operation
+// description states - a single tool's description only gets weighed at
+// the moment Claude is considering that specific call, which wasn't a
+// strong enough signal on its own to stop it reaching for warm to plug a
+// cache gap mid-question. That reflex is also the common way a question
+// burns through maxToolIterations without ever reaching a final answer,
+// since warm is async and never returns the data inline.
+const systemPrompt = `You are answering Valorant statistics questions using tools backed by a local cache (query, getMetadata) and, separately, tools that reach out to a rate-limited upstream API (warm, getWarmJob).
+
+Only call warm if the user has explicitly asked you to refresh, update, or sync the cache. Never call it just because a query came back empty or incomplete - warm runs in the background and will not return usable data in time to help answer the current question. If the data you need isn't cached, say so plainly instead of trying to warm it yourself.
+
+Your answer is posted directly into a Discord message, and Discord's markdown renderer does not support pipe tables (` + "`| col | col |`" + ` style) - it just shows the raw pipe/dash characters as plain text. Never use a markdown table. For any tabular or side-by-side comparison data, use a fenced code block (triple backticks) with columns aligned using spaces, or fall back to a simple bulleted/numbered list - both render correctly in Discord.`
+
 // Answer runs one question through Claude's tool-use loop, letting it call
 // any of mcpserver's tools (via mcpSession) as many times as it needs, and
 // returns the final plain-language answer.
@@ -27,6 +41,7 @@ func Answer(ctx context.Context, ai anthropic.Client, model string, mcpSession *
 		resp, err := ai.Messages.New(ctx, anthropic.MessageNewParams{
 			Model:     model,
 			MaxTokens: 4096,
+			System:    []anthropic.TextBlockParam{{Text: systemPrompt}},
 			Tools:     tools,
 			Messages:  messages,
 		})
