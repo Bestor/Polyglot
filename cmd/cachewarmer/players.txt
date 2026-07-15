@@ -1,0 +1,4 @@
+# One Riot ID per line, as name#tag (e.g. OrBest#NA1). Blank lines and
+# lines starting with # are ignored. Edit this file directly - if running
+# via docker compose, it's bind-mounted into the cachewarmer container so
+# changes take effect on the next hourly pass, no rebuild/restart needed.

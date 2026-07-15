@@ -10,12 +10,14 @@ client rather than in-process. Riot/HenrikDev API calls are severely rate-limite
 local caching (in an embedded PocketBase) is the core design constraint driving most of the
 architecture below.
 
-The stack is three binaries: **polyglot**, a standalone Data API (`GET /query`, `POST /warm`,
+The stack is four binaries: **polyglot**, a standalone Data API (`GET /query`, `POST`/`GET /warm`,
 `GET /metadata`, `GET`/`POST /datasources`) backed by PocketBase; **mcpserver**, an MCP server
 generated from polyglot's OpenAPI spec that proxies each tool call to a running polyglot instance
-over HTTP; and **discordbot**, an MCP client that drives the actual question-answering - it
-connects to mcpserver, hands its tools to Claude, and lets Claude's tool-use loop decide which
-ones to call to answer a Discord `/ask` question.
+over HTTP; **discordbot**, an MCP client that drives the actual question-answering - it connects to
+mcpserver, hands its tools to Claude, and lets Claude's tool-use loop decide which ones to call to
+answer a Discord `/ask` question; and **cachewarmer**, which proactively calls `POST /warm` on a
+cadence for a configured list of players, so caches stay fresh without a live question needing to
+trigger a (now-async, non-blocking-but-still-not-instant) sync.
 
 polyglot itself has no built-in domain knowledge - every table and `/warm` function comes from a
 `DataProvider` (`internal/dataprovider`) onboarded at runtime via `POST /datasources`. Valorant is
@@ -60,27 +62,30 @@ Run the stack via Docker Compose:
 docker logs -f val-analyzer-polyglot
 docker logs -f val-analyzer-mcpserver
 docker logs -f val-analyzer-discordbot
+docker logs -f val-analyzer-cachewarmer
 ```
 
 `run.sh` is a thin wrapper around `docker compose up` (`docker-compose.yml` at the repo root) - all
 app configuration (ports, the polyglot PocketBase data volume, inter-service URLs like mcpserver's
-`POLYGLOT_URL`) lives there, and all secrets/values come from `.env` (see `.env.example`). All
-three services (`polyglot`, `mcpserver`, `discordbot`) build from the one image (the same
-Dockerfile, containing all three binaries), each overriding `entrypoint` to run its own binary.
-Only `API_AUTH_TOKEN` is required in `.env`. `HENRIK_API_KEY` is optional: if set, polyglot
+`POLYGLOT_URL`) lives there, and all secrets/values come from `.env` (see `.env.example`). All four
+services (`polyglot`, `mcpserver`, `discordbot`, `cachewarmer`) build from the one image (the same
+Dockerfile, containing all four binaries), each overriding `entrypoint` to run its own binary. Only
+`API_AUTH_TOKEN` is required in `.env`. `HENRIK_API_KEY` is optional: if set, polyglot
 auto-onboards a `valorant` datasource on boot; if unset, polyglot still boots fine with zero
 datasources onboarded (onboard any datasource, including `valorant`, later via `POST
 /datasources`). `SUPERUSER_EMAIL`/`SUPERUSER_PASSWORD` (set together or not at all) auto-provision
 the PocketBase admin UI superuser on boot. `DISCORD_BOT_TOKEN`/`ANTHROPIC_API_KEY` are also
 optional: the `discordbot` service is gated behind Compose's `discordbot` profile (see
 `docker-compose.yml`), which only activates when `.env` sets `COMPOSE_PROFILES=discordbot` -
-otherwise `docker compose up` starts just `polyglot`+`mcpserver`, since `cmd/discordbot` fails fast
-without those values.
+otherwise `docker compose up` starts just `polyglot`+`mcpserver`+`cachewarmer`, since `cmd/discordbot`
+fails fast without those values. `cachewarmer` is not profile-gated - it ships with an empty
+`cmd/cachewarmer/players.txt` (a safe no-op) and starts by default; add Riot IDs to that file (one
+`name#tag` per line) to have it actually warm anyone.
 
 Manual smoke test against a running container:
 
 ```sh
-./warm.sh   # POST /warm (sync_matches on the valorant datasource) to pre-load a player's match history
+./warm.sh   # POST /warm (sync_matches on the valorant datasource); prints a 202 + job id to poll
 ```
 
 Migrations live in `internal/migrations` as hand-authored Go files (`175000000N_name.go`,
@@ -119,8 +124,18 @@ these into real `core.Field`s for dynamic collection creation), and `New(config)
   datasources if their table names don't collide). It rejects any statement mentioning `datasources`
   by name (`reservedTablePattern`) so onboarded secrets can never be read back out through this
   endpoint, even though `datasources` was never advertised via `/metadata` either.
-- `warm.go` — `POST /warm` is datasource-scoped: the request names both a `datasource` and a
-  `function`, dispatched to that active instance's `Functions()`.
+- `warm.go` — `POST /warm` is datasource-scoped (names both a `datasource` and a `function`,
+  dispatched to that active instance's `Functions()`) and asynchronous: after synchronous
+  validation (unknown datasource/function, missing required args), it hands the actual
+  `Function.Run` call to a background goroutine (bound by `warmJobTimeout`, deliberately run
+  against `context.Background()` rather than the request's own context, which is canceled the
+  instant the handler returns) and immediately responds `202` with a `WarmJob` id. `warm_jobs.go`'s
+  `jobStore` (in-memory, mutex-guarded, no persistence - job tracking is meant to survive minutes,
+  not a restart) tracks each job's `running`/`succeeded`/`failed` state, evicting finished jobs
+  after `jobTTL` or once `maxTrackedJobs` is exceeded. `GET /warm?id=` (`handleWarmStatus`) polls a
+  job's current state - the same query-param style as `GET /query`'s `sql` param, not a path
+  param, since `internal/mcpserver`'s OpenAPI-driven tool generation has no path-substitution
+  support.
 - `metadata.go` — `GET /metadata` merges every active instance's tables/functions into one response,
   each tagged with its owning `datasource`. Built fresh per request (not cached at boot), since
   `POST /datasources` can change what's active at runtime.
@@ -169,6 +184,19 @@ Claude returns a final answer. `bot.go` wires this to a single Discord slash com
 deferring the interaction response since the tool-use loop routinely takes longer than Discord's
 ~3s initial-response window. Defaults to `claude-opus-4-8` (`ANTHROPIC_MODEL` overrides it) -
 never silently downgraded to a cheaper model.
+
+**`cmd/cachewarmer`** (`internal/cachewarmer`) is the proactive counterpart to `/warm` now being
+async: since an AI tool-caller can no longer usefully call `warm` mid-question and get data back in
+time (see the `openapi/polyglot.yaml` `warm` operation description, which now tells it to only call
+`POST /warm` when a human explicitly asks for a refresh), caches need to be kept warm some other
+way. `players.go`'s `ReadPlayerTags` reads a newline-delimited Riot ID list (`cmd/cachewarmer/players.txt`,
+blank/`#`-comment lines skipped) fresh on every pass, so edits take effect without a restart;
+`client.go` is a minimal bearer-token `POST /warm` client; `run.go`'s `RunPass` fires one `Warm`
+call per player *sequentially* (no benefit to concurrency - each call returns in milliseconds since
+the slow work happens server-side and async) and never waits for a job to finish. `main.go` runs
+one pass immediately on startup, then on a `time.Ticker` at `WARM_INTERVAL` (default `1h`), until
+`SIGTERM`. Not gated behind a Compose profile like `discordbot` - it ships with an empty
+`players.txt` (a safe no-op) and starts by default.
 
 **`internal/ai`** is now scoped to exactly one thing: read-only SQL execution.
 `ai.NewReadOnlyExecutor` is the actual security boundary behind `GET /query`: it opens a *second*

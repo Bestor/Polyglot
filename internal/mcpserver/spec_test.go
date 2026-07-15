@@ -21,8 +21,8 @@ func TestLoadOperations(t *testing.T) {
 		byName[op.Name] = op
 	}
 
-	if len(ops) != 5 {
-		t.Fatalf("expected 5 operations, got %d: %+v", len(ops), byName)
+	if len(ops) != 6 {
+		t.Fatalf("expected 6 operations, got %d: %+v", len(ops), byName)
 	}
 
 	query, ok := byName["query"]
@@ -53,6 +53,20 @@ func TestLoadOperations(t *testing.T) {
 	required := requiredOf(warm.InputSchema)
 	requireStringSliceContains(t, "warm", required, "function")
 	requireStringSliceContains(t, "warm", required, "args")
+
+	getWarmJob, ok := byName["getWarmJob"]
+	if !ok {
+		t.Fatal("missing getWarmJob operation")
+	}
+	if getWarmJob.Method != "GET" || getWarmJob.Path != "/warm" {
+		t.Errorf("getWarmJob: got method=%s path=%s", getWarmJob.Method, getWarmJob.Path)
+	}
+	if getWarmJob.HasBody {
+		t.Error("getWarmJob: expected HasBody false")
+	}
+	if len(getWarmJob.Params) != 1 || getWarmJob.Params[0].Name != "id" {
+		t.Errorf("getWarmJob: expected a single 'id' param, got %+v", getWarmJob.Params)
+	}
 
 	metadata, ok := byName["getMetadata"]
 	if !ok {

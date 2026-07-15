@@ -81,13 +81,25 @@ paths:
   /warm:
     post:
       operationId: warm
-      summary: Invoke a named data-fill function
+      summary: Start a data-fill function running in the background
       description: |
-        Calls one of the functions advertised by `GET /metadata`'s `functions` list (e.g.
+        Starts one of the functions advertised by `GET /metadata`'s `functions` list (e.g.
         resolving a Riot ID into a cached player, or syncing a player's match history from the
-        upstream API) with the given arguments. This is the only way polyglot talks to the
-        upstream, rate-limited data source - `GET /query` only ever reads what's already
-        cached locally.
+        upstream API) running in the background and returns immediately with a job id - it does
+        NOT wait for the function to finish or return its result inline. Poll `GET /warm?id=`
+        with that id to check progress and get the result once it's done.
+
+        This is the only way polyglot talks to the upstream, rate-limited data source, and it can
+        take several minutes to finish (upstream rate-limit backoff) - `GET /query` only ever
+        reads what's already cached locally and returns instantly.
+
+        IMPORTANT for an AI tool-caller: because this doesn't return data inline and can take
+        minutes, only call this when a human user has explicitly asked you to refresh or update
+        the cached data. Do not call it reflexively while answering a question - it won't finish
+        in time to help answer the current question, so try `GET /query` against what's already
+        cached first, and only start a warm job if the user specifically asked for a refresh (in
+        which case, tell them you've started it and, if they want confirmation, poll `GET
+        /warm?id=` for the result).
       requestBody:
         required: true
         content:
@@ -102,29 +114,77 @@ paths:
                 start_date: "2026-05-01"
                 count: 100
       responses:
-        "200":
-          description: Function ran successfully.
+        "202":
+          description: Job accepted and running in the background.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WarmResponse"
+                $ref: "#/components/schemas/WarmJob"
               example:
+                id: "aB3dEfGhIjKlMnO"
+                datasource: valorant
                 function: sync_matches
-                summary: "synced 12 new matches (skipped 3 already cached) for OrBest#NA1, puuid abc123"
-                data:
-                  fetched: 12
-                  skipped: 3
-                  history_exhausted: false
+                status: running
+                created_at: "2026-07-12T18:04:05Z"
+                updated_at: "2026-07-12T18:04:05Z"
         "400":
-          description: Unknown function name, or a missing/invalid required argument.
+          description: Unknown datasource/function name, or a missing/invalid required argument.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
           $ref: "#/components/responses/Unauthorized"
-        "500":
-          description: The function failed while running (e.g. an upstream sync error).
+
+    get:
+      operationId: getWarmJob
+      summary: Check the status/result of a background warm job
+      description: |
+        Returns the current status of a job started by `POST /warm`: `running`, `succeeded` (with
+        `summary`/`data` populated the same way the old synchronous response used to be), or
+        `failed` (with `error` populated).
+
+        For an AI tool-caller: only call this to follow up on a warm job YOU started via `POST
+        /warm` after a human explicitly asked for a cache refresh. There is normally no reason to
+        call this while just answering a question - if you haven't called `POST /warm` in this
+        conversation, there's no job id to check.
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: A job id returned by POST /warm.
+          example: "aB3dEfGhIjKlMnO"
+      responses:
+        "200":
+          description: The job exists; check `status` for whether it's finished.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WarmJob"
+              example:
+                id: "aB3dEfGhIjKlMnO"
+                datasource: valorant
+                function: sync_matches
+                status: succeeded
+                summary: "synced 12 new matches (skipped 3 already cached) for OrBest#NA1, puuid abc123"
+                data:
+                  fetched: 12
+                  skipped: 3
+                  history_exhausted: false
+                created_at: "2026-07-12T18:04:05Z"
+                updated_at: "2026-07-12T18:04:41Z"
+        "400":
+          description: Missing id query parameter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No job with that id is currently tracked (unknown id, or its result was evicted after finishing).
           content:
             application/json:
               schema:
@@ -351,19 +411,36 @@ components:
           description: Function-specific arguments; see GET /metadata for each function's argument list.
           additionalProperties: true
 
-    WarmResponse:
+    WarmJob:
       type: object
-      required: [function, summary]
+      required: [id, datasource, function, status, created_at, updated_at]
       properties:
+        id:
+          type: string
+          description: Opaque job id; pass to GET /warm?id= to check status.
+        datasource:
+          type: string
         function:
           type: string
+        status:
+          type: string
+          enum: [running, succeeded, failed]
         summary:
           type: string
-          description: Human/AI-readable summary of what the function did.
+          description: Human/AI-readable summary of what the function did. Present once status is succeeded.
         data:
           type: object
-          description: Function-specific structured result fields.
+          description: Function-specific structured result fields. Present once status is succeeded.
           additionalProperties: true
+        error:
+          type: string
+          description: Failure message. Present once status is failed.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
 
     ColumnDescription:
       type: object

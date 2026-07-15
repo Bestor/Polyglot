@@ -46,6 +46,28 @@ services:
     depends_on:
       - mcpserver
 
+  # Not profile-gated (unlike discordbot) - safe to run by default since
+  # cmd/cachewarmer/players.txt ships empty, a no-op until a player is
+  # added to it. Fires POST /warm on a cadence (WARM_INTERVAL, default 1h)
+  # for every player listed in the bind-mounted players.txt.
+  cachewarmer:
+    build: .
+    container_name: val-analyzer-cachewarmer
+    entrypoint: ["/app/cachewarmer"]
+    env_file: .env
+    environment:
+      POLYGLOT_URL: http://polyglot:8091
+      POLYGLOT_AUTH_TOKEN: ${API_AUTH_TOKEN}
+      # Overrides cmd/cachewarmer/main.go's cmd/cachewarmer/players.txt
+      # default (correct for local/non-Docker dev) to match where the
+      # bind mount below actually places the file in this container.
+      PLAYERS_FILE: /app/players.txt
+      DEBUG: "true"
+    volumes:
+      - ./cmd/cachewarmer/players.txt:/app/players.txt
+    depends_on:
+      - polyglot
+
 volumes:
   polyglot-data:
     name: val-analyzer-polyglot-data
