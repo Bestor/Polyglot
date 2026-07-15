@@ -52,27 +52,30 @@ Some tests (e.g. `internal/polyglot/registry_test.go`, `internal/polyglot/metada
 up a real PocketBase test app via `github.com/pocketbase/pocketbase/tests` and run the app
 migrations — no extra setup needed, but they exercise the actual `internal/migrations` package.
 
-Run the stack in Docker:
+Run the stack via Docker Compose:
 
 ```sh
-./run.sh --build   # or -b: docker build then run
-./run.sh            # run the existing local image without rebuilding
+./run.sh --build   # or -b: docker compose up -d --build
+./run.sh            # docker compose up -d, reusing existing images
 docker logs -f val-analyzer-polyglot
 docker logs -f val-analyzer-mcpserver
 docker logs -f val-analyzer-discordbot
 ```
 
-`run.sh` builds one image (containing the `polyglot`, `mcpserver`, and `discordbot` binaries) and
-runs each as its own container on a shared Docker network, with polyglot/mcpserver each getting
-their own PocketBase data volume — PocketBase isn't designed for two app instances to write to the
-same SQLite data dir concurrently. Requires a populated `.env` (see `.env.example`) — only
-`API_AUTH_TOKEN` is required. `HENRIK_API_KEY` is optional: if set, polyglot auto-onboards a
-`valorant` datasource on boot; if unset, polyglot still boots fine with zero datasources onboarded
-(onboard any datasource, including `valorant`, later via `POST /datasources`).
-`SUPERUSER_EMAIL`/`SUPERUSER_PASSWORD` (set together or not at all) auto-provision the PocketBase
-admin UI superuser on boot. `DISCORD_BOT_TOKEN` is also optional: `run.sh` skips the
-`val-analyzer-discordbot` container entirely if it's unset, since `cmd/discordbot` fails fast
-without it.
+`run.sh` is a thin wrapper around `docker compose up` (`docker-compose.yml` at the repo root) - all
+app configuration (ports, the polyglot PocketBase data volume, inter-service URLs like mcpserver's
+`POLYGLOT_URL`) lives there, and all secrets/values come from `.env` (see `.env.example`). All
+three services (`polyglot`, `mcpserver`, `discordbot`) build from the one image (the same
+Dockerfile, containing all three binaries), each overriding `entrypoint` to run its own binary.
+Only `API_AUTH_TOKEN` is required in `.env`. `HENRIK_API_KEY` is optional: if set, polyglot
+auto-onboards a `valorant` datasource on boot; if unset, polyglot still boots fine with zero
+datasources onboarded (onboard any datasource, including `valorant`, later via `POST
+/datasources`). `SUPERUSER_EMAIL`/`SUPERUSER_PASSWORD` (set together or not at all) auto-provision
+the PocketBase admin UI superuser on boot. `DISCORD_BOT_TOKEN`/`ANTHROPIC_API_KEY` are also
+optional: the `discordbot` service is gated behind Compose's `discordbot` profile (see
+`docker-compose.yml`), which only activates when `.env` sets `COMPOSE_PROFILES=discordbot` -
+otherwise `docker compose up` starts just `polyglot`+`mcpserver`, since `cmd/discordbot` fails fast
+without those values.
 
 Manual smoke test against a running container:
 

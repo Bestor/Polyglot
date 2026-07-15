@@ -1,0 +1,51 @@
+# Compose is the source of truth for how the val-analyzer stack is wired up
+# (ports, volumes, inter-service URLs, the optional discordbot profile) -
+# run.sh just calls `docker compose up`. All secrets/config values come from
+# .env (see .env.example); this file only sets what varies per service.
+services:
+  polyglot:
+    build: .
+    container_name: val-analyzer-polyglot
+    entrypoint: ["/app/polyglot"]
+    env_file: .env
+    environment:
+      PORT: 8091
+      DEBUG: "true"
+    ports:
+      - "8091:8091"
+    volumes:
+      - polyglot-data:/app/pb_data
+
+  mcpserver:
+    build: .
+    container_name: val-analyzer-mcpserver
+    entrypoint: ["/app/mcpserver"]
+    env_file: .env
+    environment:
+      PORT: 8092
+      POLYGLOT_URL: http://polyglot:8091
+      POLYGLOT_AUTH_TOKEN: ${API_AUTH_TOKEN}
+      DEBUG: "true"
+    ports:
+      - "8092:8092"
+    depends_on:
+      - polyglot
+
+  # Only starts when the "discordbot" profile is active - set
+  # COMPOSE_PROFILES=discordbot in .env once DISCORD_BOT_TOKEN and
+  # ANTHROPIC_API_KEY are set, since cmd/discordbot fails fast without them.
+  discordbot:
+    build: .
+    container_name: val-analyzer-discordbot
+    entrypoint: ["/app/discordbot"]
+    profiles: ["discordbot"]
+    env_file: .env
+    environment:
+      MCP_URL: http://mcpserver:8092/mcp
+      DEBUG: "true"
+    depends_on:
+      - mcpserver
+
+volumes:
+  polyglot-data:
+    name: val-analyzer-polyglot-data

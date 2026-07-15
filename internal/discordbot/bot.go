@@ -14,8 +14,12 @@ const askCommandName = "ask"
 
 // answerTimeout bounds how long a single /ask tool-use loop is allowed to
 // run, so a stuck upstream call (Claude, or mcpserver/polyglot) can't hang
-// a Discord interaction indefinitely.
-const answerTimeout = 60 * time.Second
+// a Discord interaction indefinitely. Generous because a cold sync_matches
+// call can take several minutes under HenrikDev's rate-limit backoff
+// (2s/4s/8s/16s/32s per retried page, sometimes across several pages) -
+// Discord's interaction token stays valid for 15 minutes after a deferred
+// response, so that's the real ceiling, not anything shorter.
+const answerTimeout = 10 * time.Minute
 
 // RegisterAndServe opens the Discord session, registers the /ask slash
 // command, and wires up its handler. guildID empty registers the command
