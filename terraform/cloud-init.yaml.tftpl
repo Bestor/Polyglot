@@ -11,7 +11,7 @@ runcmd:
   - mount /dev/disk/by-id/scsi-0DO_Volume_val-analyzer-data /mnt/val-analyzer-data
   - [ sh, -c, "grep -q val-analyzer-data /etc/fstab || echo '/dev/disk/by-id/scsi-0DO_Volume_val-analyzer-data /mnt/val-analyzer-data ext4 defaults,nofail,discard 0 0' >> /etc/fstab" ]
   - mkdir -p /mnt/val-analyzer-data/pb_data
-  - [ sh, -c, "test -d /opt/val-analyzer/.git && (cd /opt/val-analyzer && git pull) || git clone --branch main https://github.com/Bestor/ValorantAnalyzer.git /opt/val-analyzer" ]
+  - [ sh, -c, "test -d /opt/val-analyzer/.git && (cd /opt/val-analyzer && git pull) || git clone --branch main https://github.com/Bestor/Polyglot.git /opt/val-analyzer" ]
   - |
     cat > /opt/val-analyzer/.env <<'EOF'
     API_AUTH_TOKEN=${api_auth_token}

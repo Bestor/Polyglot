@@ -100,7 +100,7 @@ onboarding path described next.
 ## Deployment (CI/CD)
 
 `.github/workflows/deploy.yml` runs on every push to `main`: **build** (test, then build+push the
-image to `ghcr.io/bestor/valorantanalyzer` under both `:latest` and `:sha-<commit>` tags) ->
+image to `ghcr.io/bestor/polyglot` under both `:latest` and `:sha-<commit>` tags) ->
 **provision** (`terraform apply` in `terraform/`, guaranteeing a DigitalOcean droplet/volume/firewall
 exist matching code) -> **deploy** (SSH in, `git pull` + `docker compose pull` + `docker compose up
 -d`). All three jobs are required, in that order (`needs:`), and a `concurrency` group serializes
@@ -127,7 +127,7 @@ secret's value naturally forces Terraform to recreate the droplet on the next pu
 without a separate mechanism to push updated secrets to an already-running droplet.
 
 **Every service in `docker-compose.yml` declares both `build: .` and `image:
-ghcr.io/bestor/valorantanalyzer:latest`** - local dev (`run.sh --build`) builds and tags locally
+ghcr.io/bestor/polyglot:latest`** - local dev (`run.sh --build`) builds and tags locally
 under that name with zero registry interaction; the droplet's `docker compose pull` fetches the same
 tag from GHCR instead of building (small droplet, no need to compile 4 Go binaries on it). The GHCR
 package is public (the image only ever contains compiled binaries/`openapi/`/the secret-free

@@ -12,7 +12,7 @@
 services:
   polyglot:
     build: .
-    image: ghcr.io/bestor/valorantanalyzer:latest
+    image: ghcr.io/bestor/polyglot:latest
     container_name: val-analyzer-polyglot
     entrypoint: ["/app/polyglot"]
     env_file: .env
@@ -31,7 +31,7 @@ services:
 
   mcpserver:
     build: .
-    image: ghcr.io/bestor/valorantanalyzer:latest
+    image: ghcr.io/bestor/polyglot:latest
     container_name: val-analyzer-mcpserver
     entrypoint: ["/app/mcpserver"]
     env_file: .env
@@ -51,7 +51,7 @@ services:
   # (Production's cloud-init-written .env sets this, so it's on by default there.)
   discordbot:
     build: .
-    image: ghcr.io/bestor/valorantanalyzer:latest
+    image: ghcr.io/bestor/polyglot:latest
     container_name: val-analyzer-discordbot
     entrypoint: ["/app/discordbot"]
     profiles: ["discordbot"]
@@ -68,7 +68,7 @@ services:
   # for every player listed in the bind-mounted players.txt.
   cachewarmer:
     build: .
-    image: ghcr.io/bestor/valorantanalyzer:latest
+    image: ghcr.io/bestor/polyglot:latest
     container_name: val-analyzer-cachewarmer
     entrypoint: ["/app/cachewarmer"]
     env_file: .env

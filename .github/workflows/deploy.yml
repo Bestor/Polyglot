@@ -12,7 +12,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  GHCR_IMAGE: ghcr.io/bestor/valorantanalyzer
+  GHCR_IMAGE: ghcr.io/bestor/polyglot
 
 jobs:
   build:
@@ -90,6 +90,7 @@ jobs:
           username: root
           key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
           script: |
+            set -e
             cd /opt/val-analyzer
             git pull
             docker compose pull

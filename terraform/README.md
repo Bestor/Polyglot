@@ -58,7 +58,17 @@ This produces two files:
 Delete both local copies once they're saved as GitHub secrets - they don't need to live anywhere
 else.
 
-## 5. Confirm the droplet image slug is still current
+## 5. Make the repo public
+
+`cloud-init.yaml.tftpl`'s `git clone`/`git pull` use a plain, unauthenticated HTTPS URL
+(`https://github.com/Bestor/Polyglot.git`) - this only works if the repo is public. A
+private repo fails here non-interactively (git tries to prompt for a username with no TTY to read
+from), which silently prevents `/opt/val-analyzer` from ever being created and cascades into every
+later `runcmd` step failing too.
+
+- [ ] GitHub repo -> **Settings -> General -> Danger Zone -> Change visibility -> Make public**.
+
+## 6. Confirm the droplet image slug is still current
 
 `terraform/droplet.tf` pins `image = "docker-20-04"` (DigitalOcean's Docker-preinstalled Ubuntu
 marketplace image). These slugs occasionally change - confirm it's still valid before the first
@@ -70,7 +80,7 @@ doctl compute image list-distribution --public | grep -i docker
 
 If it's drifted, update the `image` value in `terraform/droplet.tf` to match before pushing.
 
-## 6. Add every secret to GitHub
+## 7. Add every secret to GitHub
 
 `.github/workflows/deploy.yml`'s `provision` and `deploy` jobs both declare `environment:
 production`, so these secrets **must** go under a GitHub Environment named exactly `production`
@@ -97,19 +107,19 @@ protection on deploys later without touching the workflow.
 
 `GITHUB_TOKEN` (used to push to GHCR) is automatic - you don't create this one.
 
-## 7. Push to `main` and handle the expected first-run hiccup
+## 8. Push to `main` and handle the expected first-run hiccup
 
 - [ ] Push to `main`. Watch the Actions tab - `build` should succeed and create the
-  `ghcr.io/bestor/valorantanalyzer` package (as **private** by default).
+  `ghcr.io/bestor/polyglot` package (as **private** by default).
 - [ ] **The `deploy` job will likely fail on this very first run** - the droplet has no registry
   credentials (by design, see `CLAUDE.md`), so `docker compose pull` fails against a still-private
   image. This is expected, not a bug.
 - [ ] Once `build` has run at least once: GitHub -> your profile/org -> **Packages ->
-  valorantanalyzer -> Package settings -> Change visibility -> Public**. This can only be done
+  polyglot -> Package settings -> Change visibility -> Public**. This can only be done
   after the package exists, which is why it can't happen earlier in this checklist.
 - [ ] Re-run the failed workflow (or push an empty commit). `deploy` should now succeed.
 
-## 8. Verify
+## 9. Verify
 
 - [ ] `terraform output droplet_ip` (from the `provision` job's logs, or run locally against the
   same backend) gives you the droplet's address.
