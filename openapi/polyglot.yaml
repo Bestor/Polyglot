@@ -144,10 +144,12 @@ paths:
         `summary`/`data` populated the same way the old synchronous response used to be), or
         `failed` (with `error` populated).
 
-        For an AI tool-caller: only call this to follow up on a warm job YOU started via `POST
-        /warm` after a human explicitly asked for a cache refresh. There is normally no reason to
-        call this while just answering a question - if you haven't called `POST /warm` in this
-        conversation, there's no job id to check.
+        For an AI tool-caller: call this either (a) to follow up on a warm job you started via
+        `POST /warm` earlier in this same conversation, or (b) whenever a user gives you a job id
+        directly and asks you to check it - job ids aren't secret or scoped to who started them,
+        so a user asking about one from an earlier session or a different process (e.g. a
+        scheduled cache-warmer) is a completely normal request, not something to refuse. Don't
+        call this speculatively or guess at an id - only with one you were actually given.
       parameters:
         - name: id
           in: query
