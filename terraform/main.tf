@@ -33,6 +33,7 @@ terraform {
     skip_credentials_validation = true
     skip_metadata_api_check     = true
     skip_region_validation      = true
+    skip_requesting_account_id  = true # DO Spaces has no STS/IAM API - without this, init tries (and fails) an AWS account-ID lookup via GetCallerIdentity/ListRoles
     use_lockfile                = true
   }
 }
