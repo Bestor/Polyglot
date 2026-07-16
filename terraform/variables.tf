@@ -1,9 +1,9 @@
 # Non-secret infrastructure knobs, defaulted for a small personal deployment.
 
 variable "droplet_region" {
-  description = "DigitalOcean region slug for the droplet and volume."
+  description = "DigitalOcean region slug for the droplet and volume. Colocated with sfo3, where the polyglot-tfstate Space (Terraform state, terraform/main.tf) lives - not a hard requirement, just avoids unnecessary cross-region latency/complexity."
   type        = string
-  default     = "nyc3"
+  default     = "sfo3"
 }
 
 variable "droplet_size" {

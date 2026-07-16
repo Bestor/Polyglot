@@ -12,9 +12,12 @@ Do these roughly in order - later steps need values produced by earlier ones.
 
 - [ ] In the DigitalOcean control panel: **Create -> Spaces Object Storage**.
   - Name: `polyglot-tfstate`
-  - Region: **nyc3** - `terraform/main.tf`'s backend block is hardcoded to
-    `https://nyc3.digitaloceanspaces.com`. If you use a different region, update that endpoint to
-    match before the first `terraform init`.
+  - Region: **sfo3** - `terraform/main.tf`'s backend block is hardcoded to
+    `https://sfo3.digitaloceanspaces.com`. DO Spaces regions each have their own separate bucket
+    namespace (no cross-region lookup), so this must match exactly or `terraform init` fails with
+    a `NoSuchBucket` 404 even though the bucket really exists, just in a different region. If you
+    use a different region, update that endpoint in `terraform/main.tf` to match before the first
+    `terraform init`.
   - **File Listing: Restrict File Listing** (i.e. private, not public) - this bucket will hold
     Terraform state, which contains every app secret in plaintext (that's inherent to how
     Terraform state works, not a mistake - see the plan's notes on this).

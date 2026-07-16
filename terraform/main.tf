@@ -27,7 +27,7 @@ terraform {
     region = "us-east-1" # required by the backend's schema; DO ignores it, paired with skip_region_validation below
 
     endpoints = {
-      s3 = "https://nyc3.digitaloceanspaces.com" # must match whichever region the Space was created in
+      s3 = "https://sfo3.digitaloceanspaces.com" # must match whichever region the Space was created in - polyglot-tfstate lives in sfo3
     }
 
     skip_credentials_validation = true
