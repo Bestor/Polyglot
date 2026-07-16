@@ -2,3 +2,6 @@
 # lines starting with # are ignored. Edit this file directly - if running
 # via docker compose, it's bind-mounted into the cachewarmer container so
 # changes take effect on the next hourly pass, no rebuild/restart needed.
+OrBest#NA1
+pfm18GOAT#5280
+goatninja#NA1
