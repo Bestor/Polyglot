@@ -92,12 +92,15 @@ func syncMatchesFunction(ing *ingest.Service) dataprovider.Function {
 		Description: "Fetch and cache a player's matches from the upstream Valorant API, populating matches and all related per-match tables " +
 			"(match_teams, match_players, rounds, round_player_stats, damage_events, kills, kill_assists, event_player_locations). " +
 			"The upstream API only exposes \"most recent N matches\" plus an offset - there is no native date filter - so when a date range " +
-			"is given this pages backward through history until it's covered, bounded by the count safety cap.",
+			"is given this pages backward through history until it's covered, bounded by the count safety cap (or, if full_history is set, " +
+			"by nothing but the upstream's actual history - this can take a long time for a prolific player, but /warm is asynchronous so " +
+			"that's fine to let run in the background).",
 		Args: []dataprovider.FunctionArg{
 			{Name: "player_tag", Type: "string", Description: "The player's Riot ID as name#tag, e.g. \"Orbest#NA1\".", Required: true},
 			{Name: "start_date", Type: "string", Description: "ISO-8601 date (e.g. \"2026-05-01\"), the earliest match start date to ensure is cached. Omit for a plain most-recent-matches sync.", Required: false},
 			{Name: "end_date", Type: "string", Description: "ISO-8601 date, the latest match start date to ensure is cached. Defaults to now if start_date is given.", Required: false},
-			{Name: "count", Type: "integer", Description: fmt.Sprintf("Safety cap on how many matches to fetch this call, up to %d. Defaults to %d.", maxSyncMatchesPerCall, defaultSyncMatchCount), Required: false},
+			{Name: "count", Type: "integer", Description: fmt.Sprintf("Safety cap on how many matches to fetch this call, up to %d. Defaults to %d. Ignored if full_history is true.", maxSyncMatchesPerCall, defaultSyncMatchCount), Required: false},
+			{Name: "full_history", Type: "boolean", Description: "Sync a player's entire match history instead of a bounded count - pages backward until the upstream API itself runs out of matches. Only set this when a user has explicitly asked for their full/entire history, not for a normal question.", Required: false},
 		},
 		Run: func(ctx context.Context, args map[string]any) (dataprovider.FunctionOutcome, error) {
 			playerTag, _ := args["player_tag"].(string)
@@ -107,6 +110,9 @@ func syncMatchesFunction(ing *ingest.Service) dataprovider.Function {
 			}
 
 			opts := ingest.SyncOptions{MaxMatches: defaultSyncMatchCount}
+			if full, ok := args["full_history"].(bool); ok && full {
+				opts.All = true
+			}
 			if c, ok := args["count"].(float64); ok && c > 0 {
 				opts.MaxMatches = int(c)
 			}
@@ -193,6 +199,14 @@ func syncMatchesFunction(ing *ingest.Service) dataprovider.Function {
 func coverageSufficient(coverage ingest.CoverageResult, opts ingest.SyncOptions) bool {
 	if coverage.HistoryExhausted {
 		return true
+	}
+	// A full-history request is never satisfied short of HistoryExhausted
+	// - falling through to the MaxMatches check below would incorrectly
+	// treat "cache already has >= the leftover default count" as
+	// sufficient, even though most of the player's history is still
+	// unfetched.
+	if opts.All {
+		return false
 	}
 	if opts.Since != nil {
 		return coverage.Count > 0 && !coverage.Oldest.After(*opts.Since)

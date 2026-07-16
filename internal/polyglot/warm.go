@@ -23,8 +23,14 @@ type WarmRequest struct {
 // request's own deadline) bounds it. internal/ratelimit.Limiter.Wait and
 // the henrik HTTP client both already respect ctx, so this actually
 // aborts an in-flight rate-limit backoff/HTTP call, not just the wait for
-// it to return.
-const warmJobTimeout = 15 * time.Minute
+// it to return. Generous because sync_matches's full_history option
+// (ingest.SyncOptions.All) can page up to maxAllSyncPages (1000) - a
+// prolific player's entire history can take a long time to fetch under
+// upstream rate-limit backoff, and since /warm is async this doesn't block
+// anything else while it runs. A job that hits this timeout isn't wasted
+// work either: matches already fetched are already cached, so re-running
+// sync_matches resumes rather than starting over (see coverageSufficient).
+const warmJobTimeout = 2 * time.Hour
 
 // handleWarm implements POST /warm: look up the named datasource's
 // Function, validate its required args are present (synchronously - an
