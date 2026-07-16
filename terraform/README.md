@@ -127,3 +127,13 @@ protection on deploys later without touching the workflow.
   shows all four services up.
 - [ ] `docker logs val-analyzer-mcpserver` shows `tools=6`.
 - [ ] From your own machine, confirm nothing but SSH (22) is reachable on the droplet's public IP.
+
+## Forcing a droplet rebuild
+
+A plain push does **not** reliably rebuild the droplet just because `cloud-init.yaml.tftpl` changed
+or an app secret was rotated - the DigitalOcean provider's `user_data` field suppresses that diff
+in practice despite being schema-`ForceNew` (see `CLAUDE.md`'s Deployment section). If you need the
+droplet actually rebuilt (e.g. right after fixing something in `cloud-init.yaml.tftpl`, or after
+rotating a secret): GitHub repo -> **Actions -> Deploy -> Run workflow**, toggle
+`recreate_droplet` to true, run. The existing `polyglot-data` volume reattaches automatically
+(`prevent_destroy`-protected, per `terraform/volume.tf`), so this never loses PocketBase's cache.

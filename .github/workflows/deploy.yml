@@ -3,6 +3,17 @@ name: Deploy
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      recreate_droplet:
+        description: >-
+          Force the droplet to be destroyed and recreated. Needed after changing
+          cloud-init.yaml.tftpl or rotating an app secret - the DigitalOcean provider's
+          user_data field is schema-ForceNew, but its DiffSuppressFunc means a plain
+          `terraform apply` does not reliably detect content-only changes in practice, so
+          recreation has to be requested explicitly rather than happening automatically.
+        type: boolean
+        default: false
 
 # A second, free layer on top of the Terraform S3 backend's own
 # use_lockfile-based locking (see terraform/main.tf) - queues overlapping
@@ -72,8 +83,14 @@ jobs:
       - run: terraform init
         working-directory: terraform
 
-      - run: terraform apply -auto-approve
+      - name: terraform apply
         working-directory: terraform
+        run: |
+          if [ "${{ inputs.recreate_droplet }}" = "true" ]; then
+            terraform apply -auto-approve -replace="digitalocean_droplet.app"
+          else
+            terraform apply -auto-approve
+          fi
 
       - id: tf-output
         run: echo "droplet_ip=$(terraform output -raw droplet_ip)" >> "$GITHUB_OUTPUT"
@@ -91,6 +108,17 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
           script: |
             set -e
+            # terraform apply only waits for the droplet to be "active" per
+            # DigitalOcean's API - it has no visibility into whether
+            # cloud-init's runcmd (volume mount, git clone, docker pull/up)
+            # has actually finished inside the VM, and SSH itself comes up
+            # well before that. On a freshly (re)created droplet this can
+            # otherwise race: this job connects and finds /opt/val-analyzer
+            # missing even though cloud-init would have created it seconds
+            # later. On a droplet that's been up a while this returns
+            # near-instantly (cloud-init caches its "done" state), so it
+            # doesn't slow down normal deploys.
+            cloud-init status --wait
             cd /opt/val-analyzer
             git pull
             docker compose pull

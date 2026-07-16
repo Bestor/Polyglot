@@ -106,25 +106,39 @@ exist matching code) -> **deploy** (SSH in, `git pull` + `docker compose pull` +
 -d`). All three jobs are required, in that order (`needs:`), and a `concurrency` group serializes
 overlapping runs.
 
-**`terraform/`** is deliberately idempotent, not destroy-and-recreate-on-every-push: `main.tf`'s
-`digitalocean_droplet.app` only actually gets recreated by Terraform when its own definition
-changes (size/region/image, or its `user_data` content - see below), so a normal push where nothing
-infra-level changed is a fast no-op `apply`, and `deploy`'s SSH step is what actually ships each
-commit. State lives in a DigitalOcean Space (`terraform/main.tf`'s `s3` backend block, pointed at a
-DO Spaces endpoint) rather than Terraform Cloud - one provider to manage - with `use_lockfile = true`
-for real state locking (no DynamoDB-equivalent needed). `volume.tf`'s `digitalocean_volume` is a
-separate, `prevent_destroy`-protected resource specifically so PocketBase's SQLite cache - the whole
-point of this project's design - survives even a real droplet recreate; `docker-compose.yml`'s
-`polyglot` service points its `pb_data` volume at that attached disk in production via
-`PB_DATA_HOST_PATH` (unset locally, so local dev is unaffected).
+**`deploy`'s SSH script runs `cloud-init status --wait` before touching anything** -
+`terraform apply` only waits for DigitalOcean's API to report the droplet "active," which says
+nothing about whether `cloud-init.yaml.tftpl`'s `runcmd` (volume mount, git clone, docker
+pull/up) has actually finished inside the VM, and SSH itself comes up well before that finishes.
+On a freshly (re)created droplet this raced in practice - `deploy` connected and found
+`/opt/val-analyzer` missing seconds before cloud-init would have created it. `cloud-init status
+--wait` blocks until cloud-init reaches a real terminal state (and surfaces its actual exit code -
+0 success, 1 crashed, 2 recoverable errors - so a broken `runcmd` step fails the job loudly instead
+of limping on); on a droplet that's been up a while it returns near-instantly since cloud-init
+caches its "done" state, so this doesn't slow down normal deploys.
 
-**Secrets never live on the droplet by hand** - every app secret (`HENRIK_API_KEY`,
-`DISCORD_BOT_TOKEN`, etc.) is a GitHub Actions secret, flows into Terraform as a `TF_VAR_*`, and
-gets templated into `cloud-init.yaml.tftpl` (which writes the droplet's actual `.env` on first
-boot). Since `user_data` is immutable post-boot for any cloud-init-based resource, rotating a
-secret's value naturally forces Terraform to recreate the droplet on the next push (byte-identical
-`user_data` otherwise means no diff, hence no recreate) - this is what makes rotation "just work"
-without a separate mechanism to push updated secrets to an already-running droplet.
+**`terraform/`** is deliberately idempotent, not destroy-and-recreate-on-every-push: a plain push
+does a fast `terraform apply` with no `-replace`, so `deploy`'s SSH step (`git pull` + `docker
+compose pull/up`) is what actually ships each commit, not a droplet rebuild. State lives in a
+DigitalOcean Space (`terraform/main.tf`'s `s3` backend block, pointed at a DO Spaces endpoint)
+rather than Terraform Cloud - one provider to manage - with `use_lockfile = true` for real state
+locking (no DynamoDB-equivalent needed). `volume.tf`'s `digitalocean_volume` is a separate,
+`prevent_destroy`-protected resource specifically so PocketBase's SQLite cache - the whole point of
+this project's design - survives even a real droplet recreate; `docker-compose.yml`'s `polyglot`
+service points its `pb_data` volume at that attached disk in production via `PB_DATA_HOST_PATH`
+(unset locally, so local dev is unaffected).
+
+**Rebuilding the droplet is a deliberate, manual action, not something a plain push triggers** -
+`digitalocean_droplet.app`'s `user_data` is schema-`ForceNew` in the DigitalOcean provider, but the
+provider also has a `DiffSuppressFunc` on that field that suppresses content-only diffs in
+practice, so a normal `terraform apply` does *not* reliably recreate the droplet just because
+`cloud-init.yaml.tftpl`'s rendered content changed (confirmed the hard way - see git history around
+the initial deploy). Use the `deploy.yml` workflow's `workflow_dispatch` trigger with
+`recreate_droplet: true` to force it (`terraform apply -replace="digitalocean_droplet.app"`) -
+needed after editing `cloud-init.yaml.tftpl` itself, or after rotating an app secret (`HENRIK_API_KEY`,
+`DISCORD_BOT_TOKEN`, etc. - these flow GitHub Actions secret -> `TF_VAR_*` -> templated into
+`cloud-init.yaml.tftpl` -> the droplet's `.env`, written once at boot, so a rotated secret's new
+value never reaches an already-running droplet without an explicit recreate).
 
 **Every service in `docker-compose.yml` declares both `build: .` and `image:
 ghcr.io/bestor/polyglot:latest`** - local dev (`run.sh --build`) builds and tags locally
