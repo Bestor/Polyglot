@@ -18,6 +18,12 @@ variable "volume_size_gb" {
   default     = 5
 }
 
+variable "anthropic_model" {
+  description = "Model cmd/discordbot's tool-use loop calls (ANTHROPIC_MODEL). cmd/discordbot itself defaults to claude-opus-4-8 when this is unset - the default here is a deliberate, explicit production choice, not the binary silently picking a cheaper model on its own."
+  type        = string
+  default     = "claude-haiku-4-5"
+}
+
 # --- SSH ---
 
 variable "do_ssh_public_key" {

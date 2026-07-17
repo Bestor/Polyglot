@@ -140,6 +140,14 @@ needed after editing `cloud-init.yaml.tftpl` itself, or after rotating an app se
 `cloud-init.yaml.tftpl` -> the droplet's `.env`, written once at boot, so a rotated secret's new
 value never reaches an already-running droplet without an explicit recreate).
 
+**The deployed bot runs `claude-haiku-4-5`, not `cmd/discordbot`'s own `claude-opus-4-8`
+default** - `terraform/variables.tf`'s `anthropic_model` variable overrides it via the same
+`TF_VAR_*` -> `cloud-init.yaml.tftpl` -> `.env` path as the secrets above, a deliberate production
+cost choice (not the binary silently downgrading itself - see the "never silently downgraded"
+note in the `cmd/discordbot` paragraph below, which is still true of the code's own default).
+Change `anthropic_model`'s default in `terraform/variables.tf` and force a recreate
+(`recreate_droplet: true`) to switch it.
+
 **Every service in `docker-compose.yml` declares both `build: .` and `image:
 ghcr.io/bestor/polyglot:latest`** - local dev (`run.sh --build`) builds and tags locally
 under that name with zero registry interaction; the droplet's `docker compose pull` fetches the same

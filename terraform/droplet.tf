@@ -26,6 +26,7 @@ resource "digitalocean_droplet" "app" {
     henrik_api_key     = var.henrik_api_key
     discord_bot_token  = var.discord_bot_token
     anthropic_api_key  = var.anthropic_api_key
+    anthropic_model    = var.anthropic_model
     superuser_email    = var.superuser_email
     superuser_password = var.superuser_password
   })
