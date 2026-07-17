@@ -93,5 +93,10 @@ func (i *Instance) Bind(app core.App) error {
 }
 
 func (i *Instance) Functions() []dataprovider.Function {
-	return []dataprovider.Function{resolvePlayerFunction(i.ing), syncMatchesFunction(i.ing), syncSeasonsFunction(i.ing)}
+	return []dataprovider.Function{
+		resolvePlayerFunction(i.ing),
+		syncMatchesFunction(i.ing),
+		syncSeasonsFunction(i.ing),
+		backfillMatchSeasonsFunction(i.ing),
+	}
 }

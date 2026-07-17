@@ -278,3 +278,26 @@ func (s *Service) SyncSeasons(ctx context.Context) (SyncSeasonsResult, error) {
 
 	return SyncSeasonsResult{Count: len(seasons)}, nil
 }
+
+// BackfillMatchSeasonsResult reports how many previously-unlinked matches
+// were successfully backfilled with a season relation, and how many still
+// have no matching seasons row (their season_id_raw doesn't correspond to
+// anything SyncSeasons has fetched yet).
+type BackfillMatchSeasonsResult struct {
+	Updated int
+	Skipped int
+}
+
+// BackfillMatchSeasons links every match whose season relation is still
+// empty but season_id_raw is set to the matching seasons row, if one now
+// exists - see store.MatchStore.BackfillSeasons for why this can lag
+// behind ingestion (matches synced before SyncSeasons ever ran, or before
+// that specific season had been synced, never get their season link
+// filled in retroactively on their own).
+func (s *Service) BackfillMatchSeasons(ctx context.Context) (BackfillMatchSeasonsResult, error) {
+	updated, skipped, err := s.matches.BackfillSeasons(s.seasons)
+	if err != nil {
+		return BackfillMatchSeasonsResult{}, err
+	}
+	return BackfillMatchSeasonsResult{Updated: updated, Skipped: skipped}, nil
+}

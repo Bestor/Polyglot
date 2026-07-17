@@ -15,6 +15,15 @@ import (
 // internal/providers/valorant/ingest).
 const maxToolIterations = 8
 
+// answerMaxTokens is deliberately generous for a broad, multi-player
+// question (e.g. a table across several players' recent matches) - a
+// request that hit the previous, tighter budget mid-generation is exactly
+// what produced an empty final answer in production once, not just a
+// truncated one (see bot.go's finalizeAnswer, which now also guards
+// against a too-long answer for Discord's own 2000-char limit regardless
+// of this budget).
+const answerMaxTokens = 8192
+
 // systemPrompt reinforces, at the whole-conversation level, the same
 // warm-tool restriction openapi/polyglot.yaml's "warm" operation
 // description states - a single tool's description only gets weighed at
@@ -40,7 +49,7 @@ func Answer(ctx context.Context, ai anthropic.Client, model string, mcpSession *
 	for i := 0; i < maxToolIterations; i++ {
 		resp, err := ai.Messages.New(ctx, anthropic.MessageNewParams{
 			Model:     model,
-			MaxTokens: 4096,
+			MaxTokens: answerMaxTokens,
 			System:    []anthropic.TextBlockParam{{Text: systemPrompt}},
 			Tools:     tools,
 			Messages:  messages,

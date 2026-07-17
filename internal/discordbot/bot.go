@@ -3,6 +3,7 @@ package discordbot
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -11,6 +12,11 @@ import (
 )
 
 const askCommandName = "ask"
+
+// discordMaxMessageLength is Discord's hard cap on a message's content
+// field. InteractionResponseEdit rejects anything longer outright, the
+// same way it rejects empty content - see finalizeAnswer.
+const discordMaxMessageLength = 2000
 
 // answerTimeout bounds how long a single /ask tool-use loop is allowed to
 // run, so a stuck upstream call (Claude, or mcpserver/polyglot) can't hang
@@ -46,12 +52,14 @@ func RegisterAndServe(session *discordgo.Session, guildID string, ai anthropic.C
 
 		slog.Info("discordbot: ask", "question", question)
 		answer, err := Answer(ctx, ai, model, mcpSession, tools, question)
-		if err != nil {
-			slog.Error("discordbot: answer failed", "question", question, "error", err)
-			answer = "Sorry, something went wrong answering that."
+		content, attachment := finalizeAnswer(question, answer, err)
+
+		edit := &discordgo.WebhookEdit{Content: &content}
+		if attachment != nil {
+			edit.Files = []*discordgo.File{attachment}
 		}
 
-		if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &answer}); err != nil {
+		if _, err := s.InteractionResponseEdit(i.Interaction, edit); err != nil {
 			slog.Error("discordbot: failed to edit interaction response", "error", err)
 		}
 	})
@@ -73,4 +81,43 @@ func RegisterAndServe(session *discordgo.Session, guildID string, ai anthropic.C
 		},
 	})
 	return err
+}
+
+// finalizeAnswer turns Answer's result into content (and, sometimes, a
+// file attachment) guaranteed safe to hand to InteractionResponseEdit:
+// never empty (Discord's API rejects empty content outright, error 50006 -
+// which is exactly what happened when Answer legitimately returned "" with
+// no error, e.g. a tool-use round whose final turn had no text content)
+// and never longer than Discord's discordMaxMessageLength (which Answer's
+// own MaxTokens budget doesn't guarantee - a large table can still exceed
+// it even at a generous token budget, and Discord rejects that outright
+// too, error 50035/BASE_TYPE_MAX_LENGTH).
+//
+// An answer that's too long is never truncated - it's attached as a
+// complete .md file instead, so nothing the model wrote is lost. This is
+// purely a Discord-transport concern: the AI is never told about it and
+// never sees a difference in how it's asked to write an answer - it always
+// writes as if going straight into the message body, and this function
+// decides after the fact how to actually deliver it.
+func finalizeAnswer(question, answer string, err error) (content string, attachment *discordgo.File) {
+	if err != nil {
+		slog.Error("discordbot: answer failed", "question", question, "error", err)
+		return "Sorry, something went wrong answering that.", nil
+	}
+
+	if strings.TrimSpace(answer) == "" {
+		slog.Error("discordbot: answer succeeded but produced no text", "question", question)
+		return "Sorry, I wasn't able to put together a complete answer to that - try narrowing the question (e.g. fewer players or matches at once) and asking again.", nil
+	}
+
+	if len(answer) > discordMaxMessageLength {
+		slog.Warn("discordbot: answer exceeded Discord's message length limit, attaching as a file instead", "question", question, "length", len(answer))
+		return "Your answer was too long for a Discord message, so here it is as a file instead:", &discordgo.File{
+			Name:        "answer.md",
+			ContentType: "text/markdown",
+			Reader:      strings.NewReader(answer),
+		}
+	}
+
+	return answer, nil
 }

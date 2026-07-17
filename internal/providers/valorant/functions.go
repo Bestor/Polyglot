@@ -47,6 +47,36 @@ func syncSeasonsFunction(ing *ingest.Service) dataprovider.Function {
 	}
 }
 
+// backfillMatchSeasonsFunction links any already-cached match whose season
+// relation is still empty to its seasons row, now that one may exist -
+// see ingest.Service.BackfillMatchSeasons. Takes no args; safe to call
+// repeatedly (a no-op once every match with a resolvable season_id_raw has
+// been linked).
+func backfillMatchSeasonsFunction(ing *ingest.Service) dataprovider.Function {
+	return dataprovider.Function{
+		Name: "backfill_match_seasons",
+		Description: "Link any already-cached match whose season relation is still empty (but season_id_raw is set) to its seasons row, now " +
+			"that sync_seasons may have since fetched it. A match's season is only resolved best-effort at ingest time, so a match synced " +
+			"before its season was ever cached is permanently missing the link otherwise - this repairs that retroactively. Safe to call " +
+			"repeatedly; a no-op once nothing is left to link.",
+		Run: func(ctx context.Context, args map[string]any) (dataprovider.FunctionOutcome, error) {
+			result, err := ing.BackfillMatchSeasons(ctx)
+			if err != nil {
+				slog.Error("valorant: backfill_match_seasons failed", "error", err)
+				return dataprovider.FunctionOutcome{}, fmt.Errorf("failed to backfill match seasons: %w", err)
+			}
+
+			return dataprovider.FunctionOutcome{
+				Summary: fmt.Sprintf("linked %d matches to a season, %d still have no matching season cached", result.Updated, result.Skipped),
+				Data: map[string]any{
+					"updated": result.Updated,
+					"skipped": result.Skipped,
+				},
+			}, nil
+		},
+	}
+}
+
 // resolvePlayerFunction lets a caller resolve a Riot ID (name#tag) into a
 // cached player identity, without necessarily syncing any match history.
 func resolvePlayerFunction(ing *ingest.Service) dataprovider.Function {

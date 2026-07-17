@@ -66,6 +66,44 @@ func (s *MatchStore) PlayerCoverage(playerID string, until *time.Time) (count in
 	return len(records), records[0].GetDateTime("started_at").Time(), nil
 }
 
+// BackfillSeasons links every match whose season relation is still empty
+// but season_id_raw is set to the matching seasons row, if one now exists.
+// This matters because SaveMatch's season resolution is best-effort at
+// ingest time only (see its doc comment below) - a match ingested before
+// sync_seasons ever ran (or before that specific season had been synced)
+// is left with season_id_raw captured but no season link, permanently,
+// unless something goes back and re-checks it. Matches whose
+// season_id_raw still has no corresponding seasons row are left as-is and
+// counted as skipped, not treated as an error - sync_seasons may simply
+// not have fetched that one yet.
+func (s *MatchStore) BackfillSeasons(seasons *SeasonStore) (updated, skipped int, err error) {
+	records, err := s.app.FindRecordsByFilter("matches", "season = '' && season_id_raw != ''", "", 0, 0)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	for _, rec := range records {
+		rawID := rec.GetString("season_id_raw")
+		season, ok, err := seasons.FindBySeasonID(rawID)
+		if err != nil {
+			return updated, skipped, err
+		}
+		if !ok {
+			skipped++
+			continue
+		}
+
+		rec.Set("season", season.ID)
+		if err := s.app.Save(rec); err != nil {
+			return updated, skipped, err
+		}
+		updated++
+	}
+
+	slog.Info("store: backfilled match seasons", "updated", updated, "skipped", skipped)
+	return updated, skipped, nil
+}
+
 // saveMatchCtx carries the per-call caches and stores used while persisting
 // a single match, so the same player/agent/tier/weapon isn't re-resolved
 // via a DB lookup every time it's referenced (a single match can reference
