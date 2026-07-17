@@ -15,7 +15,21 @@ import (
 
 const (
 	maxQueryRows = 500
-	queryTimeout = 10 * time.Second
+	// maxCellBytes bounds any single returned value, independent of
+	// maxQueryRows - without this, a query touching a wide column (e.g.
+	// matches.raw_json, a JSON blob up to 4MiB per row - see
+	// internal/migrations/1750000006_matches.go) could return a single
+	// cell large enough on its own to blow well past an LLM caller's
+	// entire context window, regardless of row count. Confirmed the hard
+	// way: a single-digit number of matches.raw_json rows produced a
+	// >1M-token request that Claude's API rejected outright.
+	maxCellBytes = 8 * 1024
+	// maxQueryResponseBytes bounds the cumulative size of the whole
+	// result (post cell-truncation), independent of maxQueryRows - many
+	// moderately-sized rows can still add up to more than a caller should
+	// receive in one response.
+	maxQueryResponseBytes = 200 * 1024
+	queryTimeout          = 10 * time.Second
 )
 
 // ErrNotReadOnly is returned when the given SQL text isn't a SELECT/WITH
@@ -65,6 +79,7 @@ func NewReadOnlyExecutor(dataDir string) (QueryFunc, error) {
 		}
 
 		result := QueryResult{Columns: cols}
+		var totalBytes int
 		for rows.Next() {
 			if len(result.Rows) >= maxQueryRows {
 				// rows.Next() just advanced past a real row beyond the cap,
@@ -81,7 +96,34 @@ func NewReadOnlyExecutor(dataDir string) (QueryFunc, error) {
 			if err := rows.Scan(ptrs...); err != nil {
 				return QueryResult{}, err
 			}
+
+			rowBytes := 0
+			for i, v := range values {
+				truncatedVal, wasTruncated, size := truncateCell(v)
+				values[i] = truncatedVal
+				rowBytes += size
+				if wasTruncated {
+					result.Truncated = true
+				}
+			}
+
+			if len(result.Rows) > 0 && totalBytes+rowBytes > maxQueryResponseBytes {
+				// Already have at least one row - stop here rather than
+				// exceed the cumulative budget with one more.
+				result.Truncated = true
+				break
+			}
+
 			result.Rows = append(result.Rows, values)
+			totalBytes += rowBytes
+			if totalBytes > maxQueryResponseBytes {
+				// Even this one row alone exceeded the budget (e.g. a
+				// single wide-column cell) - it's already appended above
+				// so the caller isn't left with zero rows for a query
+				// that otherwise made sense, but stop immediately.
+				result.Truncated = true
+				break
+			}
 		}
 		if err := rows.Err(); err != nil {
 			return QueryResult{}, err
@@ -92,4 +134,29 @@ func NewReadOnlyExecutor(dataDir string) (QueryFunc, error) {
 
 		return result, nil
 	}, nil
+}
+
+// truncateCell caps a single scanned value at maxCellBytes, replacing an
+// oversized string/[]byte with a truncated prefix plus a marker noting the
+// original size - the only column types actually capable of being huge
+// (e.g. matches.raw_json). size is the byte cost to count toward the
+// cumulative maxQueryResponseBytes budget: the post-truncation length for a
+// truncated value, or the true length otherwise. Other scanned types
+// (numbers, bools, nil, time.Time, ...) are inherently small/bounded, so
+// they're returned unchanged with a small nominal size.
+func truncateCell(v any) (result any, truncated bool, size int) {
+	switch val := v.(type) {
+	case string:
+		if len(val) > maxCellBytes {
+			return fmt.Sprintf("%s...(truncated, %d bytes total)", val[:maxCellBytes], len(val)), true, maxCellBytes
+		}
+		return val, false, len(val)
+	case []byte:
+		if len(val) > maxCellBytes {
+			return fmt.Sprintf("%s...(truncated, %d bytes total)", val[:maxCellBytes], len(val)), true, maxCellBytes
+		}
+		return val, false, len(val)
+	default:
+		return v, false, 8
+	}
 }

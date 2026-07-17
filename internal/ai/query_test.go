@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,6 +60,106 @@ func TestReadOnlyExecutor_Truncates(t *testing.T) {
 	}
 	if len(result.Rows) != maxQueryRows {
 		t.Fatalf("expected %d rows, got %d", maxQueryRows, len(result.Rows))
+	}
+	if !result.Truncated {
+		t.Error("expected Truncated to be true")
+	}
+}
+
+// TestReadOnlyExecutor_TruncatesOversizedCell reproduces the actual
+// incident that motivated maxCellBytes: a query touching a wide column
+// (e.g. matches.raw_json, up to 4MiB/row) returned a single cell large
+// enough on its own to blow an LLM caller's context window, even though it
+// was only one row - well under maxQueryRows. The row-count cap alone
+// never would have caught this.
+func TestReadOnlyExecutor_TruncatesOversizedCell(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "data.db")
+
+	setup, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("opening setup db: %v", err)
+	}
+	if _, err := setup.Exec("CREATE TABLE matches (id TEXT, raw_json TEXT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	huge := strings.Repeat("x", maxCellBytes*4)
+	if _, err := setup.Exec("INSERT INTO matches (id, raw_json) VALUES ('m1', ?)", huge); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := setup.Close(); err != nil {
+		t.Fatalf("closing setup db: %v", err)
+	}
+
+	query, err := NewReadOnlyExecutor(dir)
+	if err != nil {
+		t.Fatalf("NewReadOnlyExecutor: %v", err)
+	}
+
+	result, err := query(context.Background(), "SELECT raw_json FROM matches")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("expected 1 row (the oversized cell should be truncated, not dropped), got %d", len(result.Rows))
+	}
+	got, ok := result.Rows[0][0].(string)
+	if !ok {
+		t.Fatalf("expected a string value, got %T", result.Rows[0][0])
+	}
+	if len(got) > maxCellBytes+64 { // small allowance for the "...(truncated, N bytes total)" marker
+		t.Errorf("expected the cell to be truncated to ~%d bytes, got %d bytes", maxCellBytes, len(got))
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Errorf("expected a truncation marker in the returned value, got %q", got[:100])
+	}
+	if !result.Truncated {
+		t.Error("expected Truncated to be true")
+	}
+}
+
+// TestReadOnlyExecutor_TruncatesCumulativeResponseBytes covers the other
+// half of the fix: many rows, each individually under maxCellBytes, that
+// still add up to more than maxQueryResponseBytes in total.
+func TestReadOnlyExecutor_TruncatesCumulativeResponseBytes(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "data.db")
+
+	setup, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("opening setup db: %v", err)
+	}
+	if _, err := setup.Exec("CREATE TABLE matches (id TEXT, raw_json TEXT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	// Each row is well under maxCellBytes on its own, but there are enough
+	// of them to exceed maxQueryResponseBytes cumulatively, long before
+	// maxQueryRows would ever kick in.
+	chunk := strings.Repeat("y", maxCellBytes/2)
+	rowsNeeded := maxQueryResponseBytes/(maxCellBytes/2) + 5
+	for i := 0; i < rowsNeeded; i++ {
+		if _, err := setup.Exec("INSERT INTO matches (id, raw_json) VALUES (?, ?)", fmt.Sprintf("m%d", i), chunk); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	if err := setup.Close(); err != nil {
+		t.Fatalf("closing setup db: %v", err)
+	}
+
+	query, err := NewReadOnlyExecutor(dir)
+	if err != nil {
+		t.Fatalf("NewReadOnlyExecutor: %v", err)
+	}
+
+	result, err := query(context.Background(), "SELECT raw_json FROM matches")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(result.Rows) >= rowsNeeded {
+		t.Fatalf("expected fewer than the %d inserted rows back (cumulative byte cap should stop early), got %d", rowsNeeded, len(result.Rows))
+	}
+	if len(result.Rows) == 0 {
+		t.Fatal("expected at least one row back, got none")
 	}
 	if !result.Truncated {
 		t.Error("expected Truncated to be true")
