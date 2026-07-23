@@ -1,18 +1,22 @@
-// Command polyglot runs the standalone Data API for val-analyzer: it
-// embeds PocketBase for storage and exposes the small ANSI-SQL-oriented
-// REST API described by openapi/polyglot.yaml (GET /query, POST /warm, GET
-// /metadata, GET/POST /datasources) that any caller - including an MCP
-// server - can use to answer statistical questions. It has no domain
-// knowledge of its own: data sources are dataprovider.Provider
-// implementations (see internal/providers/valorant) registered below and
-// onboarded at runtime via POST /datasources.
+// Command polyglot runs the generic Data API for val-analyzer: it embeds
+// PocketBase for its own onboarding/catalog bookkeeping (the
+// datasources/tables/columns collections) and exposes the small
+// ANSI-SQL-oriented REST API described by openapi/polyglot.yaml (GET
+// /query, GET /metadata, GET/POST /datasources, POST /datasources/
+// reconcile, and the *_/annotate curation endpoints) that any caller -
+// including an MCP server - can use to answer statistical questions. It
+// has no domain knowledge of its own: every datasource is a
+// dataprovider.Provider connection (internal/providers/sqlite,
+// internal/providers/httpsql) onboarded at runtime via POST /datasources.
+// Valorant itself is not compiled in here - it's its own standalone
+// service (cmd/valorantapi), reached like any other http_sql datasource.
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/core"
@@ -21,10 +25,13 @@ import (
 	"val-analyzer/internal/ai"
 	"val-analyzer/internal/config"
 	"val-analyzer/internal/dataprovider"
+	"val-analyzer/internal/jobstore"
 	"val-analyzer/internal/logging"
 	_ "val-analyzer/internal/migrations"
 	"val-analyzer/internal/polyglot"
-	"val-analyzer/internal/providers/valorant"
+	"val-analyzer/internal/providers/httpsql"
+	"val-analyzer/internal/providers/sqlite"
+	"val-analyzer/internal/vault"
 )
 
 func main() {
@@ -64,22 +71,32 @@ func main() {
 	}
 
 	providers := map[string]dataprovider.Provider{
-		valorant.Type: valorant.Provider{},
+		sqlite.Type:  sqlite.Provider{OwnDataDir: cfg.PBDataDir},
+		httpsql.Type: httpsql.Provider{},
 		// register additional compiled-in provider types here.
 	}
-	reg := polyglot.NewRegistry(providers)
 
 	app.OnServe().BindFunc(func(se *core.ServeEvent) error {
+		ctx := context.Background()
+
+		vc, err := vault.New(ctx, cfg.VaultAddr, cfg.VaultToken, cfg.VaultUnsealKey)
+		if err != nil {
+			return err
+		}
+
+		jobs := jobstore.New()
+		reg := polyglot.NewRegistry(providers, vc, jobs)
+
 		// Collections only exist once migrations have run during
 		// bootstrap, which happens before this hook fires, so it's safe
 		// here to: rehydrate previously-onboarded datasources,
-		// auto-onboard valorant from env if configured, open the
-		// read-only query connection, and register routes - in that
-		// order.
-		if err := reg.Rehydrate(se.App); err != nil {
+		// auto-onboard the standalone Valorant API from env if
+		// configured, open the read-only query connection, and register
+		// routes - in that order.
+		if err := reg.Rehydrate(ctx, se.App); err != nil {
 			return err
 		}
-		if err := autoOnboardValorantFromEnv(se.App, reg); err != nil {
+		if err := autoOnboardValorantAPIFromEnv(ctx, se.App, reg); err != nil {
 			return err
 		}
 
@@ -88,7 +105,7 @@ func main() {
 			return err
 		}
 
-		if err := polyglot.RegisterRoutes(se, reg, query, cfg.APIAuthToken); err != nil {
+		if err := polyglot.RegisterRoutes(se, reg, jobs, query, cfg.APIAuthToken); err != nil {
 			return err
 		}
 
@@ -100,34 +117,33 @@ func main() {
 	}
 }
 
-// autoOnboardValorantFromEnv preserves the "just works from a populated
-// .env" experience: if HENRIK_API_KEY is set and valorant hasn't already
-// been onboarded (e.g. rehydrated from a prior POST /datasources call),
-// onboard it now through the exact same Registry.Onboard path POST
-// /datasources uses - a convenience wrapper around the real mechanism,
-// not a separate code path.
-func autoOnboardValorantFromEnv(app core.App, reg *polyglot.Registry) error {
-	apiKey := os.Getenv("HENRIK_API_KEY")
-	if apiKey == "" {
+// valorantDatasourceName is the fixed name the auto-onboard convenience
+// below uses - not a special case in Registry itself, just this binary's
+// default choice of name for its one built-in convenience onboard.
+const valorantDatasourceName = "valorant"
+
+// autoOnboardValorantAPIFromEnv preserves the "just works from a populated
+// .env" experience: if VALORANT_API_URL is set and it hasn't already been
+// onboarded (e.g. rehydrated from a prior POST /datasources call), onboard
+// it now as an http_sql datasource through the exact same Registry.Onboard
+// path POST /datasources uses - a convenience wrapper around the real
+// mechanism, not a separate code path.
+func autoOnboardValorantAPIFromEnv(ctx context.Context, app core.App, reg *polyglot.Registry) error {
+	baseURL := os.Getenv("VALORANT_API_URL")
+	if baseURL == "" {
 		return nil
 	}
-	if _, ok := reg.Instance(valorant.Type); ok {
+	if _, ok := reg.Instance(valorantDatasourceName); ok {
 		return nil
 	}
 
-	cfg := map[string]any{"henrik_api_key": apiKey}
-	if v := os.Getenv("HENRIK_BASE_URL"); v != "" {
-		cfg["henrik_base_url"] = v
-	}
-	if v := os.Getenv("HENRIK_RATE_LIMIT_PER_MINUTE"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return fmt.Errorf("invalid HENRIK_RATE_LIMIT_PER_MINUTE: %w", err)
-		}
-		cfg["rate_limit_per_minute"] = n
+	token := os.Getenv("VALORANT_API_AUTH_TOKEN")
+	if token == "" {
+		return fmt.Errorf("VALORANT_API_URL is set but VALORANT_API_AUTH_TOKEN is not")
 	}
 
-	_, err := reg.Onboard(app, valorant.Type, cfg)
+	cfg := map[string]any{"base_url": baseURL, "auth_token": token}
+	_, err := reg.Onboard(ctx, app, valorantDatasourceName, httpsql.Type, cfg)
 	return err
 }
 

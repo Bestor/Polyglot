@@ -13,8 +13,8 @@ import (
 	"strconv"
 	"time"
 
-	"val-analyzer/internal/providers/valorant/data_sources"
 	"val-analyzer/internal/ratelimit"
+	"val-analyzer/internal/valorant/data_sources"
 )
 
 // Rate-limit retry tuning: the local token-bucket limiter (ratelimit.Limiter)

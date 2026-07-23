@@ -7,7 +7,7 @@ import (
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 
-	"val-analyzer/internal/providers/valorant/data_sources"
+	"val-analyzer/internal/valorant/data_sources"
 )
 
 type Season struct {

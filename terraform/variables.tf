@@ -43,7 +43,7 @@ variable "api_auth_token" {
 }
 
 variable "henrik_api_key" {
-  description = "HenrikDev API key for the valorant DataProvider."
+  description = "HenrikDev API key - cmd/valorantapi's own boot-time config since the two-binary split, not a polyglot-onboarding secret."
   type        = string
   sensitive   = true
 }

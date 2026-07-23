@@ -28,24 +28,24 @@ func NewClient(baseURL, authToken string) *Client {
 }
 
 type warmRequest struct {
-	Datasource string         `json:"datasource"`
-	Function   string         `json:"function"`
-	Args       map[string]any `json:"args"`
+	Function string         `json:"function"`
+	Args     map[string]any `json:"args"`
 }
 
 type warmJob struct {
 	ID string `json:"id"`
 }
 
-// Warm calls POST /warm and returns the started job's id. It does not
-// wait for the job to finish - polyglot's /warm is already async, and
-// cachewarmer's whole point is to fire-and-forget across a player list,
-// not block on any one player's sync.
-func (c *Client) Warm(ctx context.Context, datasource, function, playerTag string) (string, error) {
+// Warm calls POST /warm (against cmd/valorantapi - the only service with
+// a /warm endpoint now, see internal/polyglot/routes.go's doc comment) and
+// returns the started job's id. It does not wait for the job to finish -
+// /warm is already async, and cachewarmer's whole point is to
+// fire-and-forget across a player list, not block on any one player's
+// sync.
+func (c *Client) Warm(ctx context.Context, function, playerTag string) (string, error) {
 	body, err := json.Marshal(warmRequest{
-		Datasource: datasource,
-		Function:   function,
-		Args:       map[string]any{"player_tag": playerTag},
+		Function: function,
+		Args:     map[string]any{"player_tag": playerTag},
 	})
 	if err != nil {
 		return "", fmt.Errorf("encoding request: %w", err)

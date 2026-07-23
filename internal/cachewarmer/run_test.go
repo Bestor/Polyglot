@@ -25,7 +25,7 @@ func TestRunPass(t *testing.T) {
 	}
 
 	client := NewClient(srv.URL, "secret-token")
-	RunPass(context.Background(), client, path, "valorant", "sync_matches")
+	RunPass(context.Background(), client, path, "sync_matches")
 
 	if got := atomic.LoadInt32(&calls); got != 2 {
 		t.Errorf("expected 2 warm calls, got %d", got)
@@ -42,7 +42,7 @@ func TestRunPass_EmptyFile(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "does-not-exist.txt")
 	client := NewClient(srv.URL, "secret-token")
-	RunPass(context.Background(), client, path, "valorant", "sync_matches")
+	RunPass(context.Background(), client, path, "sync_matches")
 
 	if got := atomic.LoadInt32(&calls); got != 0 {
 		t.Errorf("expected 0 warm calls for a missing file, got %d", got)

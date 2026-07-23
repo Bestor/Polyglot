@@ -21,8 +21,8 @@ func TestLoadOperations(t *testing.T) {
 		byName[op.Name] = op
 	}
 
-	if len(ops) != 6 {
-		t.Fatalf("expected 6 operations, got %d: %+v", len(ops), byName)
+	if len(ops) != 9 {
+		t.Fatalf("expected 9 operations, got %d: %+v", len(ops), byName)
 	}
 
 	query, ok := byName["query"]
@@ -35,37 +35,43 @@ func TestLoadOperations(t *testing.T) {
 	if query.HasBody {
 		t.Error("query: expected HasBody false")
 	}
-	if len(query.Params) != 1 || query.Params[0].Name != "sql" {
-		t.Errorf("query: expected a single 'sql' param, got %+v", query.Params)
+	if len(query.Params) != 2 {
+		t.Errorf("query: expected 'sql' and 'datasource' params, got %+v", query.Params)
 	}
 	requireStringSliceContains(t, "query", requiredOf(query.InputSchema), "sql")
 
-	warm, ok := byName["warm"]
+	onboard, ok := byName["onboardDatasource"]
 	if !ok {
-		t.Fatal("missing warm operation")
+		t.Fatal("missing onboardDatasource operation")
 	}
-	if warm.Method != "POST" || warm.Path != "/warm" {
-		t.Errorf("warm: got method=%s path=%s", warm.Method, warm.Path)
+	if onboard.Method != "POST" || onboard.Path != "/datasources" {
+		t.Errorf("onboardDatasource: got method=%s path=%s", onboard.Method, onboard.Path)
 	}
-	if !warm.HasBody {
-		t.Error("warm: expected HasBody true")
+	if !onboard.HasBody {
+		t.Error("onboardDatasource: expected HasBody true")
 	}
-	required := requiredOf(warm.InputSchema)
-	requireStringSliceContains(t, "warm", required, "function")
-	requireStringSliceContains(t, "warm", required, "args")
+	required := requiredOf(onboard.InputSchema)
+	requireStringSliceContains(t, "onboardDatasource", required, "name")
+	requireStringSliceContains(t, "onboardDatasource", required, "type")
 
-	getWarmJob, ok := byName["getWarmJob"]
+	getJob, ok := byName["getJob"]
 	if !ok {
-		t.Fatal("missing getWarmJob operation")
+		t.Fatal("missing getJob operation")
 	}
-	if getWarmJob.Method != "GET" || getWarmJob.Path != "/warm" {
-		t.Errorf("getWarmJob: got method=%s path=%s", getWarmJob.Method, getWarmJob.Path)
+	if getJob.Method != "GET" || getJob.Path != "/jobs" {
+		t.Errorf("getJob: got method=%s path=%s", getJob.Method, getJob.Path)
 	}
-	if getWarmJob.HasBody {
-		t.Error("getWarmJob: expected HasBody false")
+	if getJob.HasBody {
+		t.Error("getJob: expected HasBody false")
 	}
-	if len(getWarmJob.Params) != 1 || getWarmJob.Params[0].Name != "id" {
-		t.Errorf("getWarmJob: expected a single 'id' param, got %+v", getWarmJob.Params)
+	if len(getJob.Params) != 1 || getJob.Params[0].Name != "id" {
+		t.Errorf("getJob: expected a single 'id' param, got %+v", getJob.Params)
+	}
+
+	for _, name := range []string{"reconcileDatasource", "annotateDatasource", "annotateTable", "annotateColumn", "listDatasources"} {
+		if _, ok := byName[name]; !ok {
+			t.Errorf("missing %s operation", name)
+		}
 	}
 
 	metadata, ok := byName["getMetadata"]

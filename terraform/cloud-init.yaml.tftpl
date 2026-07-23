@@ -10,7 +10,15 @@ runcmd:
   - mkdir -p /mnt/val-analyzer-data
   - mount /dev/disk/by-id/scsi-0DO_Volume_val-analyzer-data /mnt/val-analyzer-data
   - [ sh, -c, "grep -q val-analyzer-data /etc/fstab || echo '/dev/disk/by-id/scsi-0DO_Volume_val-analyzer-data /mnt/val-analyzer-data ext4 defaults,nofail,discard 0 0' >> /etc/fstab" ]
+  # pb_data: unchanged name/path from before the two-binary split - now
+  # mounted into valorantapi instead of polyglot, so the existing cached
+  # match data carries over with zero backfill on cutover. polyglot_metadata
+  # and openbao_file are new, empty subdirectories on the same persistent
+  # volume (avoids a second prevent_destroy-protected digitalocean_volume
+  # resource and its added monthly cost).
   - mkdir -p /mnt/val-analyzer-data/pb_data
+  - mkdir -p /mnt/val-analyzer-data/polyglot_metadata
+  - mkdir -p /mnt/val-analyzer-data/openbao_file
   - [ sh, -c, "test -d /opt/val-analyzer/.git && (cd /opt/val-analyzer && git pull) || git clone --branch main https://github.com/Bestor/Polyglot.git /opt/val-analyzer" ]
   - |
     cat > /opt/val-analyzer/.env <<'EOF'
@@ -23,6 +31,19 @@ runcmd:
     SUPERUSER_PASSWORD=${superuser_password}
     COMPOSE_PROFILES=discordbot
     PB_DATA_HOST_PATH=/mnt/val-analyzer-data/pb_data
+    PB_METADATA_HOST_PATH=/mnt/val-analyzer-data/polyglot_metadata
+    VAULT_DATA_HOST_PATH=/mnt/val-analyzer-data/openbao_file
     DEBUG=false
     EOF
-  - [ sh, -c, "cd /opt/val-analyzer && docker compose pull && docker compose up -d" ]
+  - [ sh, -c, "cd /opt/val-analyzer && docker compose pull" ]
+  # OpenBao has to actually be running before it can be initialized, and
+  # polyglot fails fast without a resolvable VAULT_TOKEN/VAULT_UNSEAL_KEY -
+  # so OpenBao comes up alone first, terraform/bootstrap-vault.sh
+  # initializes it (or, on a recreate, reconnects to its already-
+  # initialized state on the reattached volume) and appends the resulting
+  # values to .env, and only then does the rest of the stack start. This
+  # fully automates what used to be a by-hand SSH runbook - see that
+  # script and the root CLAUDE.md's OpenBao section for the full picture.
+  - [ sh, -c, "cd /opt/val-analyzer && docker compose up -d openbao" ]
+  - [ sh, -c, "chmod +x /opt/val-analyzer/terraform/bootstrap-vault.sh && /opt/val-analyzer/terraform/bootstrap-vault.sh" ]
+  - [ sh, -c, "cd /opt/val-analyzer && docker compose up -d" ]

@@ -1,55 +1,52 @@
 package polyglot
 
 import (
-	"fmt"
 	"log/slog"
 	"net/http"
 
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
-
-	"val-analyzer/internal/dataprovider"
 )
 
 type ColumnDescription struct {
+	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Type        string `json:"type"`
 	Description string `json:"description"`
 }
 
 type TableDescription struct {
-	Name        string              `json:"name"`
-	Description string              `json:"description"`
-	Datasource  string              `json:"datasource"`
-	Columns     []ColumnDescription `json:"columns"`
+	ID            string              `json:"id"`
+	Name          string              `json:"name"`
+	Description   string              `json:"description"`
+	Datasource    string              `json:"datasource"`
+	QueryGuidance string              `json:"query_guidance"`
+	Columns       []ColumnDescription `json:"columns"`
 }
 
-type FunctionArg struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Required    bool   `json:"required"`
-	Description string `json:"description"`
-}
-
-type FunctionDescription struct {
-	Name        string        `json:"name"`
-	Description string        `json:"description"`
-	Datasource  string        `json:"datasource"`
-	Args        []FunctionArg `json:"args"`
+type DatasourceGuidance struct {
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	QueryGuidance string `json:"query_guidance"`
 }
 
 type MetadataResponse struct {
-	Tables    []TableDescription    `json:"tables"`
-	Functions []FunctionDescription `json:"functions"`
+	Datasources []DatasourceGuidance `json:"datasources"`
+	Tables      []TableDescription   `json:"tables"`
 }
 
-// handleMetadata implements GET /metadata: describes every active
-// datasource's tables and functions, merged into one response and each
-// tagged with its owning datasource. Built fresh per request (not cached
-// at boot) since the schema can change at runtime via POST /datasources.
-func handleMetadata(reg *Registry) func(e *core.RequestEvent) error {
+// handleMetadata implements GET /metadata: describes every onboarded
+// datasource plus its tables/columns, merged into one response. Built
+// fresh per request from the persisted tables/columns/datasources
+// snapshot (internal/polyglot/catalog.go's reconcileCatalog is what keeps
+// that snapshot current) - deliberately never a live Instance.Catalog()
+// call, so this endpoint's latency stays independent of any one
+// datasource's health/speed, even a slow or temporarily-unreachable
+// network one.
+func handleMetadata() func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		slog.Info("polyglot: metadata requested")
-		metadata, err := buildMetadata(e.App, reg.ActiveInstances())
+		metadata, err := buildMetadata(e.App)
 		if err != nil {
 			return e.InternalServerError("failed to build metadata", err)
 		}
@@ -57,61 +54,52 @@ func handleMetadata(reg *Registry) func(e *core.RequestEvent) error {
 	}
 }
 
-func buildMetadata(app core.App, active []ActiveInstance) (MetadataResponse, error) {
+func buildMetadata(app core.App) (MetadataResponse, error) {
+	dsRecords, err := app.FindAllRecords(datasourcesCollection)
+	if err != nil {
+		return MetadataResponse{}, err
+	}
+
 	var resp MetadataResponse
-	for _, a := range active {
-		described, err := buildTableDescriptions(app, a.Tables)
+	dsNameByID := make(map[string]string, len(dsRecords))
+	for _, ds := range dsRecords {
+		dsNameByID[ds.Id] = ds.GetString("name")
+		resp.Datasources = append(resp.Datasources, DatasourceGuidance{
+			Name:          ds.GetString("name"),
+			Description:   ds.GetString("description"),
+			QueryGuidance: ds.GetString("query_guidance"),
+		})
+	}
+
+	tableRecords, err := app.FindAllRecords("tables")
+	if err != nil {
+		return MetadataResponse{}, err
+	}
+
+	for _, t := range tableRecords {
+		columnRecords, err := app.FindRecordsByFilter("columns", "table = {:table}", "name", 0, 0, dbx.Params{"table": t.Id})
 		if err != nil {
 			return MetadataResponse{}, err
 		}
-		for _, t := range described {
-			t.Datasource = a.Type
-			resp.Tables = append(resp.Tables, t)
-		}
-		for _, f := range a.Functions {
-			resp.Functions = append(resp.Functions, FunctionDescription{
-				Name:        f.Name,
-				Description: f.Description,
-				Datasource:  a.Type,
-				Args:        toFunctionArgs(f.Args),
+		columns := make([]ColumnDescription, 0, len(columnRecords))
+		for _, c := range columnRecords {
+			columns = append(columns, ColumnDescription{
+				ID:          c.Id,
+				Name:        c.GetString("name"),
+				Type:        c.GetString("type"),
+				Description: c.GetString("description"),
 			})
 		}
+
+		resp.Tables = append(resp.Tables, TableDescription{
+			ID:            t.Id,
+			Name:          t.GetString("name"),
+			Description:   t.GetString("description"),
+			Datasource:    dsNameByID[t.GetString("datasource")],
+			QueryGuidance: t.GetString("query_guidance"),
+			Columns:       columns,
+		})
 	}
+
 	return resp, nil
-}
-
-// buildTableDescriptions introspects the live PocketBase collections for
-// specs (so structure/types can never drift from what's actually there)
-// and merges in each field's hand-authored Description. Uses
-// FindCachedCollectionByNameOrId since this now runs on every /metadata
-// request rather than once at boot.
-func buildTableDescriptions(app core.App, specs []dataprovider.TableSpec) ([]TableDescription, error) {
-	result := make([]TableDescription, 0, len(specs))
-	for _, spec := range specs {
-		col, err := app.FindCachedCollectionByNameOrId(spec.Name)
-		if err != nil {
-			return nil, fmt.Errorf("table %q: %w", spec.Name, err)
-		}
-
-		notes := make(map[string]string, len(spec.Fields))
-		for _, f := range spec.Fields {
-			notes[f.Name] = f.Description
-		}
-
-		columns := make([]ColumnDescription, 0, len(col.Fields))
-		for _, f := range col.Fields {
-			columns = append(columns, ColumnDescription{Name: f.GetName(), Type: f.Type(), Description: notes[f.GetName()]})
-		}
-
-		result = append(result, TableDescription{Name: col.Name, Description: spec.Description, Columns: columns})
-	}
-	return result, nil
-}
-
-func toFunctionArgs(args []dataprovider.FunctionArg) []FunctionArg {
-	out := make([]FunctionArg, len(args))
-	for i, a := range args {
-		out[i] = FunctionArg{Name: a.Name, Type: a.Type, Required: a.Required, Description: a.Description}
-	}
-	return out
 }

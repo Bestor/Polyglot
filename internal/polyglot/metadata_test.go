@@ -1,86 +1,94 @@
 package polyglot
 
 import (
+	"context"
 	"testing"
-
-	"github.com/pocketbase/pocketbase/core"
-	"github.com/pocketbase/pocketbase/tests"
 
 	"val-analyzer/internal/dataprovider"
 	_ "val-analyzer/internal/migrations"
 )
 
 func TestBuildMetadata(t *testing.T) {
-	app, err := tests.NewTestApp()
-	if err != nil {
-		t.Fatalf("NewTestApp: %v", err)
-	}
-	defer app.Cleanup()
+	app := newTestApp(t)
 
-	if _, err := core.NewMigrationsRunner(app, core.AppMigrations).Up(); err != nil {
-		t.Fatalf("running app migrations: %v", err)
-	}
-
-	active := []ActiveInstance{
-		{
-			Type: "valorant",
-			Tables: []dataprovider.TableSpec{
-				{
-					Name:        "players",
-					Description: "cached players",
-					Fields: []dataprovider.FieldSpec{
-						{Name: "riot_puuid", Description: "stable id"},
-					},
-				},
-			},
-			Functions: []dataprovider.Function{
-				{
-					Name:        "resolve_player",
-					Description: "resolve a player",
-					Args: []dataprovider.FunctionArg{
-						{Name: "name", Type: "string", Required: true},
-						{Name: "tag", Type: "string", Required: true},
-					},
-				},
-			},
+	provider := fakeProvider{
+		typ: "widgets",
+		catalog: []dataprovider.TableCatalog{
+			{Name: "widgets", Columns: []dataprovider.ColumnCatalog{{Name: "sku", Type: "TEXT"}}},
 		},
 	}
+	reg, jobs := newTestRegistry(map[string]dataprovider.Provider{"widgets": provider})
 
-	metadata, err := buildMetadata(app, active)
+	resp, err := reg.Onboard(context.Background(), app, "widgets", "widgets", map[string]any{"api_key": "k"})
+	if err != nil {
+		t.Fatalf("Onboard: %v", err)
+	}
+	waitForJob(t, jobs, resp.ReconcileJobID)
+
+	dsRec, err := app.FindFirstRecordByFilter("datasources", "name = 'widgets'")
+	if err != nil {
+		t.Fatalf("finding datasources row: %v", err)
+	}
+	dsRec.Set("description", "widget inventory")
+	dsRec.Set("query_guidance", "always filter by sku")
+	if err := app.Save(dsRec); err != nil {
+		t.Fatalf("annotating datasource: %v", err)
+	}
+
+	tableRec, err := app.FindFirstRecordByFilter("tables", "name = 'widgets'")
+	if err != nil {
+		t.Fatalf("finding tables row: %v", err)
+	}
+	tableRec.Set("description", "cached widgets")
+	if err := app.Save(tableRec); err != nil {
+		t.Fatalf("annotating table: %v", err)
+	}
+
+	metadata, err := buildMetadata(app)
 	if err != nil {
 		t.Fatalf("buildMetadata: %v", err)
 	}
 
-	if len(metadata.Tables) == 0 {
-		t.Fatal("expected at least one table in metadata")
+	if len(metadata.Datasources) != 1 || metadata.Datasources[0].Name != "widgets" {
+		t.Fatalf("expected one datasource named widgets, got %+v", metadata.Datasources)
+	}
+	if metadata.Datasources[0].Description != "widget inventory" {
+		t.Errorf("expected curated datasource description, got %q", metadata.Datasources[0].Description)
+	}
+	if metadata.Datasources[0].QueryGuidance != "always filter by sku" {
+		t.Errorf("expected curated datasource query_guidance, got %q", metadata.Datasources[0].QueryGuidance)
 	}
 
-	var playersTable *TableDescription
+	var widgetsTable *TableDescription
 	for i := range metadata.Tables {
-		if metadata.Tables[i].Name == "players" {
-			playersTable = &metadata.Tables[i]
+		if metadata.Tables[i].Name == "widgets" {
+			widgetsTable = &metadata.Tables[i]
 		}
 	}
-	if playersTable == nil {
-		t.Fatal("players table missing from metadata")
+	if widgetsTable == nil {
+		t.Fatal("widgets table missing from metadata")
 	}
-	if playersTable.Datasource != "valorant" {
-		t.Errorf("expected players table tagged with datasource %q, got %q", "valorant", playersTable.Datasource)
+	if widgetsTable.Datasource != "widgets" {
+		t.Errorf("expected table tagged with datasource %q, got %q", "widgets", widgetsTable.Datasource)
 	}
+	if widgetsTable.Description != "cached widgets" {
+		t.Errorf("expected curated table description, got %q", widgetsTable.Description)
+	}
+	if len(widgetsTable.Columns) != 1 || widgetsTable.Columns[0].Name != "sku" {
+		t.Fatalf("expected one sku column, got %+v", widgetsTable.Columns)
+	}
+	if widgetsTable.Columns[0].Type != "TEXT" {
+		t.Errorf("expected column type TEXT, got %q", widgetsTable.Columns[0].Type)
+	}
+}
 
-	if len(metadata.Functions) != 1 {
-		t.Fatalf("expected 1 function, got %d", len(metadata.Functions))
+func TestBuildMetadata_EmptyCatalog(t *testing.T) {
+	app := newTestApp(t)
+	metadata, err := buildMetadata(app)
+	if err != nil {
+		t.Fatalf("buildMetadata: %v", err)
 	}
-	if metadata.Functions[0].Name != "resolve_player" {
-		t.Errorf("expected resolve_player, got %q", metadata.Functions[0].Name)
-	}
-	if metadata.Functions[0].Datasource != "valorant" {
-		t.Errorf("expected function tagged with datasource %q, got %q", "valorant", metadata.Functions[0].Datasource)
-	}
-	if len(metadata.Functions[0].Args) != 2 {
-		t.Fatalf("expected 2 args, got %d", len(metadata.Functions[0].Args))
-	}
-	if !metadata.Functions[0].Args[0].Required {
-		t.Error("expected name arg to be required")
+	if len(metadata.Datasources) != 0 || len(metadata.Tables) != 0 {
+		t.Errorf("expected an empty catalog on a fresh app, got %+v", metadata)
 	}
 }

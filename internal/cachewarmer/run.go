@@ -12,7 +12,7 @@ import (
 // a background job on polyglot's side - the actual slow work happens
 // there, decoupled from this loop entirely), so there is no wall-clock
 // benefit to firing them concurrently, only added complexity.
-func RunPass(ctx context.Context, client *Client, playersFile, datasource, function string) {
+func RunPass(ctx context.Context, client *Client, playersFile, function string) {
 	tags, err := ReadPlayerTags(playersFile)
 	if err != nil {
 		slog.Error("cachewarmer: reading players file, skipping this cycle", "path", playersFile, "error", err)
@@ -25,7 +25,7 @@ func RunPass(ctx context.Context, client *Client, playersFile, datasource, funct
 
 	slog.Info("cachewarmer: starting warm pass", "players", len(tags))
 	for _, tag := range tags {
-		jobID, err := client.Warm(ctx, datasource, function, tag)
+		jobID, err := client.Warm(ctx, function, tag)
 		if err != nil {
 			slog.Error("cachewarmer: warm request failed", "player_tag", tag, "error", err)
 			continue

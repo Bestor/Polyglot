@@ -21,10 +21,13 @@ func main() {
 	debug := getEnvBool("DEBUG", false)
 	logging.Init(debug)
 
-	polyglotURL := mustEnv("POLYGLOT_URL")
+	// POLYGLOT_URL/POLYGLOT_AUTH_TOKEN name is unchanged from before the
+	// two-binary split, but now points at cmd/valorantapi - the only
+	// service with a /warm endpoint (see internal/polyglot/routes.go's
+	// doc comment on why core polyglot itself no longer has one).
+	valorantAPIURL := mustEnv("POLYGLOT_URL")
 	authToken := mustEnv("POLYGLOT_AUTH_TOKEN")
 	playersFile := getEnvDefault("PLAYERS_FILE", "cmd/cachewarmer/players.txt")
-	datasource := getEnvDefault("WARM_DATASOURCE", "valorant")
 	function := getEnvDefault("WARM_FUNCTION", "sync_matches")
 
 	interval, err := time.ParseDuration(getEnvDefault("WARM_INTERVAL", "1h"))
@@ -32,13 +35,13 @@ func main() {
 		log.Fatalf("invalid WARM_INTERVAL: %v", err)
 	}
 
-	client := cachewarmer.NewClient(polyglotURL, authToken)
+	client := cachewarmer.NewClient(valorantAPIURL, authToken)
 	ctx := context.Background()
 
-	log.Printf("cachewarmer: starting, polyglot_url=%s players_file=%s datasource=%s function=%s interval=%s",
-		polyglotURL, playersFile, datasource, function, interval)
+	log.Printf("cachewarmer: starting, valorant_api_url=%s players_file=%s function=%s interval=%s",
+		valorantAPIURL, playersFile, function, interval)
 
-	cachewarmer.RunPass(ctx, client, playersFile, datasource, function)
+	cachewarmer.RunPass(ctx, client, playersFile, function)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -49,7 +52,7 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			cachewarmer.RunPass(ctx, client, playersFile, datasource, function)
+			cachewarmer.RunPass(ctx, client, playersFile, function)
 		case <-stop:
 			log.Print("cachewarmer: shutting down")
 			return

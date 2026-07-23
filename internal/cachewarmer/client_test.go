@@ -25,7 +25,7 @@ func TestClient_Warm(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient(srv.URL, "secret-token")
-	jobID, err := client.Warm(context.Background(), "valorant", "sync_matches", "OrBest#NA1")
+	jobID, err := client.Warm(context.Background(), "sync_matches", "OrBest#NA1")
 	if err != nil {
 		t.Fatalf("Warm: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestClient_Warm(t *testing.T) {
 	if gotAuth != "Bearer secret-token" {
 		t.Errorf("expected bearer token header, got %q", gotAuth)
 	}
-	if gotBody.Datasource != "valorant" || gotBody.Function != "sync_matches" {
+	if gotBody.Function != "sync_matches" {
 		t.Errorf("unexpected request body: %+v", gotBody)
 	}
 	if gotBody.Args["player_tag"] != "OrBest#NA1" {
@@ -57,7 +57,7 @@ func TestClient_Warm_NonAcceptedStatus(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient(srv.URL, "secret-token")
-	if _, err := client.Warm(context.Background(), "valorant", "bogus", "OrBest#NA1"); err == nil {
+	if _, err := client.Warm(context.Background(), "bogus", "OrBest#NA1"); err == nil {
 		t.Error("expected an error for a non-202 status")
 	}
 }

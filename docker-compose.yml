@@ -9,7 +9,73 @@
 # deploy pipeline's `docker compose pull` (see .github/workflows/deploy.yml)
 # fetches that exact tag from GHCR instead of building - same file, no
 # prod-specific overlay needed.
+#
+# Two Data APIs now, not one: valorantapi owns Valorant's own PocketBase
+# (all the real cached match/player data) and is reached by polyglot over
+# the network as an onboarded "http_sql" datasource - polyglot's own
+# PocketBase only ever holds onboarding/catalog bookkeeping. See CLAUDE.md
+# for the full architecture.
 services:
+  valorantapi:
+    build: .
+    image: ghcr.io/bestor/polyglot:latest
+    container_name: val-analyzer-valorantapi
+    entrypoint: ["/app/valorantapi"]
+    env_file: .env
+    environment:
+      PORT: 8093
+      # Local dev default is verbose (./run.sh with no .env override);
+      # production's cloud-init-written .env sets DEBUG=false explicitly -
+      # this must stay a substitution, not a hardcoded "true", or every
+      # service silently ignores that and runs at debug level (full SQL
+      # text, full tool-call args) in production regardless.
+      DEBUG: ${DEBUG:-true}
+    ports:
+      - "8093:8093"
+    volumes:
+      # Unset (local dev): resolves to the named volume below, unchanged
+      # behavior. Set to a host path (production, via cloud-init-written
+      # .env): becomes a bind mount to the persistent DigitalOcean Volume,
+      # so PocketBase's cache survives a droplet recreate - see
+      # terraform/volume.tf and terraform/cloud-init.yaml.tftpl. This is
+      # the same PB_DATA_HOST_PATH the old single-binary polyglot used to
+      # mount - the two-binary split retargets it to valorantapi
+      # unchanged, so the droplet's existing cached match data carries
+      # over with zero backfill on cutover.
+      - ${PB_DATA_HOST_PATH:-valorantapi-data}:/app/pb_data
+
+  openbao:
+    image: openbao/openbao:2.5 # pinned, not :latest
+    container_name: val-analyzer-openbao
+    # The image's own default command is `server -dev -dev-no-store-token`
+    # (in-memory dev mode, auto-unsealed, no real persistence) - it starts
+    # its own built-in dev listener on 0.0.0.0:8200 *in addition to* the one
+    # BAO_LOCAL_CONFIG below defines, so without this override both race for
+    # the same port and OpenBao fails to start ("address already in use").
+    # We want the real file-backed, sealed-until-unsealed behavior the file
+    # storage backend below actually provides, so dev mode must never run.
+    command: ["server"]
+    cap_add: [IPC_LOCK]
+    environment:
+      BAO_LOCAL_CONFIG: |
+        {"storage": {"file": {"path": "/openbao/file"}},
+         "listener": {"tcp": {"address": "0.0.0.0:8200", "tls_disable": true}}}
+      # The bao CLI's own default target address is https://127.0.0.1:8200
+      # regardless of how the server itself is configured - without this,
+      # every `bao <subcommand>` run inside this container (bootstrap-vault.sh,
+      # the manual recovery commands in terraform/README.md, ad-hoc
+      # debugging) fails immediately with "server gave HTTP response to
+      # HTTPS client", since tls_disable above means the server only ever
+      # speaks plain HTTP.
+      BAO_ADDR: http://127.0.0.1:8200
+    volumes:
+      - ${VAULT_DATA_HOST_PATH:-openbao-data}:/openbao/file
+    # No ports: mapping - internal Compose network only. polyglot is the
+    # only consumer (http://openbao:8200), and it auto-unseals on every
+    # boot - see internal/vault and terraform/README.md's "OpenBao setup
+    # and operations" section for the one-time init/policy setup this
+    # still requires by hand.
+
   polyglot:
     build: .
     image: ghcr.io/bestor/polyglot:latest
@@ -18,16 +84,25 @@ services:
     env_file: .env
     environment:
       PORT: 8091
-      DEBUG: "true"
+      VAULT_ADDR: http://openbao:8200
+      VALORANT_API_URL: http://valorantapi:8093
+      VALORANT_API_AUTH_TOKEN: ${API_AUTH_TOKEN}
+      # Local dev default is verbose (./run.sh with no .env override);
+      # production's cloud-init-written .env sets DEBUG=false explicitly -
+      # this must stay a substitution, not a hardcoded "true", or every
+      # service silently ignores that and runs at debug level (full SQL
+      # text, full tool-call args) in production regardless.
+      DEBUG: ${DEBUG:-true}
     ports:
       - "8091:8091"
+    depends_on:
+      - openbao
+      - valorantapi
     volumes:
-      # Unset (local dev): resolves to the named volume below, unchanged
-      # behavior. Set to a host path (production, via cloud-init-written
-      # .env): becomes a bind mount to the persistent DigitalOcean Volume,
-      # so PocketBase's cache survives a droplet recreate - see
-      # terraform/volume.tf and terraform/cloud-init.yaml.tftpl.
-      - ${PB_DATA_HOST_PATH:-polyglot-data}:/app/pb_data
+      # A separate, fresh volume from valorantapi's - polyglot's own
+      # PocketBase never holds Valorant's domain data, only its own
+      # datasources/tables/columns bookkeeping.
+      - ${PB_METADATA_HOST_PATH:-polyglot-metadata}:/app/pb_data
 
   mcpserver:
     build: .
@@ -39,7 +114,12 @@ services:
       PORT: 8092
       POLYGLOT_URL: http://polyglot:8091
       POLYGLOT_AUTH_TOKEN: ${API_AUTH_TOKEN}
-      DEBUG: "true"
+      # Local dev default is verbose (./run.sh with no .env override);
+      # production's cloud-init-written .env sets DEBUG=false explicitly -
+      # this must stay a substitution, not a hardcoded "true", or every
+      # service silently ignores that and runs at debug level (full SQL
+      # text, full tool-call args) in production regardless.
+      DEBUG: ${DEBUG:-true}
     ports:
       - "8092:8092"
     depends_on:
@@ -58,14 +138,20 @@ services:
     env_file: .env
     environment:
       MCP_URL: http://mcpserver:8092/mcp
-      DEBUG: "true"
+      # Local dev default is verbose (./run.sh with no .env override);
+      # production's cloud-init-written .env sets DEBUG=false explicitly -
+      # this must stay a substitution, not a hardcoded "true", or every
+      # service silently ignores that and runs at debug level (full SQL
+      # text, full tool-call args) in production regardless.
+      DEBUG: ${DEBUG:-true}
     depends_on:
       - mcpserver
 
   # Not profile-gated (unlike discordbot) - safe to run by default since
   # cmd/cachewarmer/players.txt ships empty, a no-op until a player is
   # added to it. Fires POST /warm on a cadence (WARM_INTERVAL, default 1h)
-  # for every player listed in the bind-mounted players.txt.
+  # for every player listed in the bind-mounted players.txt - directly
+  # against valorantapi now, the only service left with a /warm endpoint.
   cachewarmer:
     build: .
     image: ghcr.io/bestor/polyglot:latest
@@ -73,18 +159,33 @@ services:
     entrypoint: ["/app/cachewarmer"]
     env_file: .env
     environment:
-      POLYGLOT_URL: http://polyglot:8091
+      POLYGLOT_URL: http://valorantapi:8093
       POLYGLOT_AUTH_TOKEN: ${API_AUTH_TOKEN}
       # Overrides cmd/cachewarmer/main.go's cmd/cachewarmer/players.txt
       # default (correct for local/non-Docker dev) to match where the
       # bind mount below actually places the file in this container.
       PLAYERS_FILE: /app/players.txt
-      DEBUG: "true"
+      # Local dev default is verbose (./run.sh with no .env override);
+      # production's cloud-init-written .env sets DEBUG=false explicitly -
+      # this must stay a substitution, not a hardcoded "true", or every
+      # service silently ignores that and runs at debug level (full SQL
+      # text, full tool-call args) in production regardless.
+      DEBUG: ${DEBUG:-true}
     volumes:
       - ./cmd/cachewarmer/players.txt:/app/players.txt
     depends_on:
-      - polyglot
+      - valorantapi
 
 volumes:
-  polyglot-data:
+  valorantapi-data:
+    # Deliberately the SAME physical volume name the old single-binary
+    # polyglot used before the two-binary split (val-analyzer-polyglot-data)
+    # - valorantapi.volumes' comment above already documented this intent;
+    # this name was accidentally changed during implementation, orphaning
+    # the real cached match/player data under the old volume name until
+    # fixed here.
     name: val-analyzer-polyglot-data
+  polyglot-metadata:
+    name: val-analyzer-polyglot-metadata
+  openbao-data:
+    name: val-analyzer-openbao-data

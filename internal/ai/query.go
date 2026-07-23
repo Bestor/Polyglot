@@ -53,87 +53,97 @@ func NewReadOnlyExecutor(dataDir string) (QueryFunc, error) {
 	}
 
 	return func(ctx context.Context, sqlText string) (QueryResult, error) {
-		trimmed := strings.TrimSpace(sqlText)
-		start := time.Now()
-		slog.Debug("ai: sql query", "sql", trimmed)
-
-		upper := strings.ToUpper(trimmed)
-		if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
-			slog.Warn("ai: sql query rejected", "sql", trimmed, "error", ErrNotReadOnly)
-			return QueryResult{}, ErrNotReadOnly
-		}
-
-		qCtx, cancel := context.WithTimeout(ctx, queryTimeout)
-		defer cancel()
-
-		rows, err := db.QueryContext(qCtx, trimmed)
-		if err != nil {
-			slog.Error("ai: sql query failed", "sql", trimmed, "error", err, "duration_ms", time.Since(start).Milliseconds())
-			return QueryResult{}, err
-		}
-		defer rows.Close()
-
-		cols, err := rows.Columns()
-		if err != nil {
-			return QueryResult{}, err
-		}
-
-		result := QueryResult{Columns: cols}
-		var totalBytes int
-		for rows.Next() {
-			if len(result.Rows) >= maxQueryRows {
-				// rows.Next() just advanced past a real row beyond the cap,
-				// so there's strictly more data than what's being returned.
-				result.Truncated = true
-				break
-			}
-
-			values := make([]any, len(cols))
-			ptrs := make([]any, len(cols))
-			for i := range values {
-				ptrs[i] = &values[i]
-			}
-			if err := rows.Scan(ptrs...); err != nil {
-				return QueryResult{}, err
-			}
-
-			rowBytes := 0
-			for i, v := range values {
-				truncatedVal, wasTruncated, size := truncateCell(v)
-				values[i] = truncatedVal
-				rowBytes += size
-				if wasTruncated {
-					result.Truncated = true
-				}
-			}
-
-			if len(result.Rows) > 0 && totalBytes+rowBytes > maxQueryResponseBytes {
-				// Already have at least one row - stop here rather than
-				// exceed the cumulative budget with one more.
-				result.Truncated = true
-				break
-			}
-
-			result.Rows = append(result.Rows, values)
-			totalBytes += rowBytes
-			if totalBytes > maxQueryResponseBytes {
-				// Even this one row alone exceeded the budget (e.g. a
-				// single wide-column cell) - it's already appended above
-				// so the caller isn't left with zero rows for a query
-				// that otherwise made sense, but stop immediately.
-				result.Truncated = true
-				break
-			}
-		}
-		if err := rows.Err(); err != nil {
-			return QueryResult{}, err
-		}
-
-		slog.Info("ai: sql query complete", "rows", len(result.Rows), "truncated", result.Truncated, "duration_ms", time.Since(start).Milliseconds())
-		slog.Debug("ai: sql query complete", "sql", trimmed)
-
-		return result, nil
+		return RunReadOnlyQuery(ctx, db, sqlText)
 	}, nil
+}
+
+// RunReadOnlyQuery executes sqlText against db, enforcing the row/cell/
+// cumulative safety caps below. db must already be physically incapable of
+// writing (e.g. opened with mode=ro) - shared by NewReadOnlyExecutor
+// (polyglot's own data.db) and any connect-style dataprovider.Instance
+// (e.g. internal/providers/sqlite) that opens its own read-only connection
+// to an onboarded file.
+func RunReadOnlyQuery(ctx context.Context, db *sql.DB, sqlText string) (QueryResult, error) {
+	trimmed := strings.TrimSpace(sqlText)
+	start := time.Now()
+	slog.Debug("ai: sql query", "sql", trimmed)
+
+	upper := strings.ToUpper(trimmed)
+	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
+		slog.Warn("ai: sql query rejected", "sql", trimmed, "error", ErrNotReadOnly)
+		return QueryResult{}, ErrNotReadOnly
+	}
+
+	qCtx, cancel := context.WithTimeout(ctx, queryTimeout)
+	defer cancel()
+
+	rows, err := db.QueryContext(qCtx, trimmed)
+	if err != nil {
+		slog.Error("ai: sql query failed", "sql", trimmed, "error", err, "duration_ms", time.Since(start).Milliseconds())
+		return QueryResult{}, err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return QueryResult{}, err
+	}
+
+	result := QueryResult{Columns: cols}
+	var totalBytes int
+	for rows.Next() {
+		if len(result.Rows) >= maxQueryRows {
+			// rows.Next() just advanced past a real row beyond the cap,
+			// so there's strictly more data than what's being returned.
+			result.Truncated = true
+			break
+		}
+
+		values := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range values {
+			ptrs[i] = &values[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return QueryResult{}, err
+		}
+
+		rowBytes := 0
+		for i, v := range values {
+			truncatedVal, wasTruncated, size := truncateCell(v)
+			values[i] = truncatedVal
+			rowBytes += size
+			if wasTruncated {
+				result.Truncated = true
+			}
+		}
+
+		if len(result.Rows) > 0 && totalBytes+rowBytes > maxQueryResponseBytes {
+			// Already have at least one row - stop here rather than
+			// exceed the cumulative budget with one more.
+			result.Truncated = true
+			break
+		}
+
+		result.Rows = append(result.Rows, values)
+		totalBytes += rowBytes
+		if totalBytes > maxQueryResponseBytes {
+			// Even this one row alone exceeded the budget (e.g. a
+			// single wide-column cell) - it's already appended above
+			// so the caller isn't left with zero rows for a query
+			// that otherwise made sense, but stop immediately.
+			result.Truncated = true
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return QueryResult{}, err
+	}
+
+	slog.Info("ai: sql query complete", "rows", len(result.Rows), "truncated", result.Truncated, "duration_ms", time.Since(start).Milliseconds())
+	slog.Debug("ai: sql query complete", "sql", trimmed)
+
+	return result, nil
 }
 
 // truncateCell caps a single scanned value at maxCellBytes, replacing an

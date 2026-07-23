@@ -98,16 +98,20 @@ protection on deploys later without touching the workflow.
 - [ ] `DEPLOY_SSH_PRIVATE_KEY` (step 4)
 - [ ] `API_AUTH_TOKEN` - same value you'd use locally in `.env`; this becomes both `polyglot`'s and
   `mcpserver`'s shared bearer token in production
-- [ ] `HENRIK_API_KEY`
+- [ ] `HENRIK_API_KEY` - cmd/valorantapi's own boot-time config since the two-binary split
 - [ ] `DISCORD_BOT_TOKEN`
 - [ ] `ANTHROPIC_API_KEY`
 - [ ] `SUPERUSER_EMAIL` (optional - leave the GitHub secret unset/empty if you don't want an admin
   superuser auto-provisioned)
 - [ ] `SUPERUSER_PASSWORD` (required if `SUPERUSER_EMAIL` is set, otherwise optional)
 
+Notably absent: no `VAULT_TOKEN`/`VAULT_UNSEAL_KEY` secret to create here. OpenBao's one-time init/
+policy setup is fully automated by `terraform/bootstrap-vault.sh` (see step 9) - those two values
+are generated on the droplet itself and never leave it, so there's nothing to add to GitHub.
+
 `GITHUB_TOKEN` (used to push to GHCR) is automatic - you don't create this one.
 
-## 8. Push to `main` and handle the expected first-run hiccup
+## 8. Push to `main` and handle the expected first-run hiccups
 
 - [ ] Push to `main`. Watch the Actions tab - `build` should succeed and create the
   `ghcr.io/bestor/polyglot` package (as **private** by default).
@@ -117,15 +121,56 @@ protection on deploys later without touching the workflow.
 - [ ] Once `build` has run at least once: GitHub -> your profile/org -> **Packages ->
   polyglot -> Package settings -> Change visibility -> Public**. This can only be done
   after the package exists, which is why it can't happen earlier in this checklist.
-- [ ] Re-run the failed workflow (or push an empty commit). `deploy` should now succeed.
+- [ ] Re-run the failed workflow (or push an empty commit). `deploy` should now succeed, and
+  `polyglot` should come up clean on the first try - see step 9 for how.
 
-## 9. Verify
+## 9. OpenBao setup and operations
+
+OpenBao (the self-hosted Vault fork every onboarded datasource's secrets live in - see
+`internal/vault` and the root `CLAUDE.md`) needs a few one-time steps before `polyglot` can boot -
+initializing it (with a single key share/threshold, deliberately, so the one resulting key can
+power fully automatic unsealing on every restart), enabling the KV v2 engine, and creating a
+narrowly-scoped policy/token for `polyglot` itself (never the root token). **This is fully
+automated** by `terraform/cloud-init.yaml.tftpl` + `terraform/bootstrap-vault.sh`, which run on
+first boot: OpenBao comes up alone first, `bootstrap-vault.sh` runs the whole init/unseal/policy
+sequence against it, writes the resulting scoped token + unseal key to
+`/mnt/val-analyzer-data/vault-init.env` (a file on the same `prevent_destroy`-protected volume
+OpenBao's own data lives on - not GitHub secrets, not Terraform state), appends them to `.env`, and
+only then does the rest of the stack start. A droplet recreate reconnects to the same
+already-initialized vault via that same persisted file instead of re-running `bao operator init`
+(which errors if run against an already-initialized vault) or losing access to what's stored in it.
+No by-hand SSH steps, nothing to add to GitHub secrets.
+
+**If it ever doesn't come up clean** (e.g. `polyglot` crash-looping on `VAULT_TOKEN is required` -
+check `docker logs val-analyzer-polyglot`): `bootstrap-vault.sh`'s 60-second wait loop for OpenBao's
+listener may have timed out on an unusually slow boot. SSH in and re-run it by hand - it's
+idempotent, safe to run again:
+```sh
+cd /opt/val-analyzer && ./terraform/bootstrap-vault.sh && docker compose up -d
+```
+If you ever need to run the underlying steps manually instead (e.g. debugging, or recovering a
+vault whose `vault-init.env` was somehow lost while the underlying OpenBao data was not) the exact
+commands are in `terraform/bootstrap-vault.sh` itself - it's a plain shell script, not a black box.
+
+**Recurring operational note, not a one-time step**: OpenBao's file storage backend has no
+persisted seal state, so it starts sealed again on every real restart (droplet reboot, or an
+explicit `docker compose restart openbao`) - polyglot's own boot sequence unseals it automatically
+using `VAULT_UNSEAL_KEY` (read from `.env`, populated by `bootstrap-vault.sh` at first boot) every
+time it starts, so this is normally invisible. It only becomes visible (and needs a manual
+`docker compose exec openbao bao operator unseal <key from vault-init.env>`) if OpenBao is
+restarted *without* polyglot restarting alongside it.
+
+## 10. Verify
 
 - [ ] `terraform output droplet_ip` (from the `provision` job's logs, or run locally against the
   same backend) gives you the droplet's address.
 - [ ] SSH in (`ssh -i val_analyzer_ci_deploy root@<droplet_ip>`) and confirm `docker compose ps`
-  shows all four services up.
-- [ ] `docker logs val-analyzer-mcpserver` shows `tools=6`.
+  shows all six services up (`valorantapi`, `openbao`, `polyglot`, `mcpserver`, `cachewarmer`, and
+  `discordbot` if the profile is active).
+- [ ] `docker logs val-analyzer-mcpserver` shows tools being registered from `openapi/polyglot.yaml`.
+- [ ] `GET /query?datasource=valorant&sql=SELECT COUNT(*) FROM matches` against `polyglot` (through
+  its own bearer token) returns a real count, confirming the `polyglot` -> `openbao` +
+  `polyglot` -> `valorantapi` wiring all actually works end to end.
 - [ ] From your own machine, confirm nothing but SSH (22) is reachable on the droplet's public IP.
 
 ## Forcing a droplet rebuild
@@ -135,5 +180,8 @@ or an app secret was rotated - the DigitalOcean provider's `user_data` field sup
 in practice despite being schema-`ForceNew` (see `CLAUDE.md`'s Deployment section). If you need the
 droplet actually rebuilt (e.g. right after fixing something in `cloud-init.yaml.tftpl`, or after
 rotating a secret): GitHub repo -> **Actions -> Deploy -> Run workflow**, toggle
-`recreate_droplet` to true, run. The existing `polyglot-data` volume reattaches automatically
-(`prevent_destroy`-protected, per `terraform/volume.tf`), so this never loses PocketBase's cache.
+`recreate_droplet` to true, run. The existing `val-analyzer-data` volume (`pb_data`/
+`polyglot_metadata`/`openbao_file` subdirectories) reattaches automatically
+(`prevent_destroy`-protected, per `terraform/volume.tf`), so this never loses cached data - though
+OpenBao does come back up sealed and needs polyglot's own restart (which happens automatically as
+part of the same `docker compose up`) to auto-unseal it again.

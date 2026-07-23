@@ -1,4 +1,7 @@
-package polyglot
+// Package httpauth is a tiny static bearer-token middleware for
+// PocketBase-embedded HTTP APIs, shared by cmd/polyglot and
+// cmd/valorantapi so both binaries' HTTP surfaces are gated the same way.
+package httpauth
 
 import (
 	"crypto/subtle"
@@ -7,9 +10,9 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 )
 
-// requireAuthToken guards every polyglot route with a static shared-secret
+// RequireToken guards every route it's bound to with a static shared-secret
 // bearer token, constant-time compared server-side.
-func requireAuthToken(token string) func(e *core.RequestEvent) error {
+func RequireToken(token string) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		got := strings.TrimPrefix(e.Request.Header.Get("Authorization"), "Bearer ")
 		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(token)) != 1 {

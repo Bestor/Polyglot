@@ -203,3 +203,34 @@ func TestReadOnlyExecutor_RunsSelect(t *testing.T) {
 		t.Error("expected Truncated to be false")
 	}
 }
+
+// TestRunReadOnlyQuery_DirectCall proves RunReadOnlyQuery works against any
+// caller-supplied *sql.DB, not just one built by NewReadOnlyExecutor - the
+// property internal/providers/sqlite relies on to reuse this exact
+// truncation/safety logic against an onboarded external file.
+func TestRunReadOnlyQuery_DirectCall(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("opening in-memory db: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec("CREATE TABLE widgets (sku TEXT)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO widgets (sku) VALUES ('abc123')"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	result, err := RunReadOnlyQuery(context.Background(), db, "SELECT sku FROM widgets")
+	if err != nil {
+		t.Fatalf("RunReadOnlyQuery: %v", err)
+	}
+	if len(result.Rows) != 1 || result.Rows[0][0] != "abc123" {
+		t.Fatalf("expected [[abc123]], got %v", result.Rows)
+	}
+
+	if _, err := RunReadOnlyQuery(context.Background(), db, "DELETE FROM widgets"); !errors.Is(err, ErrNotReadOnly) {
+		t.Errorf("expected DELETE to be rejected with ErrNotReadOnly, got %v", err)
+	}
+}

@@ -9,8 +9,8 @@ import (
 	"log/slog"
 	"time"
 
-	"val-analyzer/internal/providers/valorant/data_sources"
-	"val-analyzer/internal/providers/valorant/store"
+	"val-analyzer/internal/valorant/data_sources"
+	"val-analyzer/internal/valorant/store"
 )
 
 // platform is currently always "pc" since that's the only platform the
@@ -145,6 +145,11 @@ type SyncResult struct {
 // optionally restricted to opts.Since/opts.Until. Season resolution is
 // best-effort: if a match's season isn't cached yet, the match is still
 // stored with season_id_raw set and no season relation.
+//
+// A plain call (opts.All false, opts.Since nil) stops as soon as it
+// reconnects with an already-cached match, rather than always walking to
+// opts.MaxMatches/maxSyncPages - see the reconnect-based early stop inside
+// the paging loop below.
 func (s *Service) SyncPlayerMatches(ctx context.Context, player store.Player, opts SyncOptions) (SyncResult, error) {
 	var result SyncResult
 	var latestSynced time.Time
@@ -191,6 +196,24 @@ pagingLoop:
 			}
 			if exists {
 				result.Skipped++
+				// Reconnect-based early stop: SyncPlayerMatches always
+				// walks backward from "now", and (per PlayerCoverage's own
+				// doc comment) an unbroken run of syncs accumulates
+				// gap-free coverage from now back to the deepest point
+				// ever reached - so the first already-cached match we see
+				// on a plain "stay caught up" walk means every match
+				// beyond it, going further back, was already covered by a
+				// prior sync. Without this, a plain sync_matches call for
+				// a well-established player pages all the way to
+				// maxPages/opts.MaxMatches every single time even when
+				// only a handful of matches are actually new, hammering
+				// the upstream rate limit for no benefit. Only applies to
+				// the plain case: an All (full-history) walk must not stop
+				// early, and a Since-bounded walk has its own
+				// oldest-entry-vs-Since completion check below instead.
+				if !opts.All && opts.Since == nil {
+					break pagingLoop
+				}
 				continue
 			}
 			if !opts.All && result.Fetched >= opts.MaxMatches {
