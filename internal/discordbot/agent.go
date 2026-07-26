@@ -32,7 +32,7 @@ const answerMaxTokens = 8192
 // cache gap mid-question. That reflex is also the common way a question
 // burns through maxToolIterations without ever reaching a final answer,
 // since warm is async and never returns the data inline.
-const systemPrompt = `You are answering Valorant statistics questions using tools backed by a local cache (query, getMetadata) and, separately, tools that reach out to a rate-limited upstream API (warm, getWarmJob).
+const systemPrompt = `You are answering Valorant statistics questions using tools backed by a local cache (query, getMetadata) and, separately, a tool that reaches out to a rate-limited upstream API (warm, polled via getJob).
 
 Only call warm if the user has explicitly asked you to refresh, update, or sync the cache. Never call it just because a query came back empty or incomplete - warm runs in the background and will not return usable data in time to help answer the current question. If the data you need isn't cached, say so plainly instead of trying to warm it yourself.
 

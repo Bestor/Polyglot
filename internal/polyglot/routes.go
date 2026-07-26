@@ -1,14 +1,18 @@
 // Package polyglot implements the polyglot Data API: GET /query (read-only
 // ANSI SQL, optionally routed to a named onboarded datasource), GET
-// /metadata (schema/guidance discovery from the persisted catalog), and
-// GET/POST /datasources plus /datasources/reconcile and the three
-// /*/annotate curation endpoints. It has no AI/reasoning logic of its own
-// - that lives in a separate MCP server that calls these endpoints. It
-// also has no domain knowledge of its own - every onboarded datasource
-// comes from a dataprovider.Provider registered with the Registry (see
-// cmd/polyglot/main.go). Async jobs (currently just catalog reconciliation
-// - there is no /warm here anymore, see cmd/valorantapi for that) are
-// tracked via internal/jobstore and polled through GET /jobs?id=.
+// /metadata (schema/guidance discovery from the persisted catalog),
+// GET/POST /datasources plus /datasources/reconcile and the four
+// /*/annotate curation endpoints, and POST /warm (a thin, generic proxy to
+// whichever onboarded datasource implements dataprovider.FunctionRunner -
+// e.g. cmd/valorantapi's own /warm, reached via internal/providers/
+// httpsql). It has no AI/reasoning logic of its own - that lives in a
+// separate MCP server that calls these endpoints. It also has no domain
+// knowledge of its own - every onboarded datasource comes from a
+// dataprovider.Provider registered with the Registry (see
+// cmd/polyglot/main.go). Async jobs (polyglot's own catalog-reconcile
+// jobs, or a proxied POST /warm job) are tracked via internal/jobstore (or,
+// for a proxied job, the remote datasource's own equivalent) and polled
+// through GET /jobs?id=[&datasource=].
 package polyglot
 
 import (
@@ -35,19 +39,32 @@ func RegisterRoutes(se *core.ServeEvent, reg *Registry, jobs *jobstore.Store, qu
 	group.POST("/datasources/annotate", handleAnnotateDatasource())
 	group.POST("/tables/annotate", handleAnnotateTable())
 	group.POST("/columns/annotate", handleAnnotateColumn())
-	group.GET("/jobs", handleJobStatus(jobs))
+	group.POST("/warm", handleWarm(reg))
+	group.POST("/functions/annotate", handleAnnotateFunction())
+	group.GET("/jobs", handleJobStatus(jobs, reg))
 
 	return nil
 }
 
 // handleJobStatus implements GET /jobs?id=: poll a previously started
-// async job's current status/result (currently only catalog-reconcile
-// jobs - see internal/polyglot/catalog.go).
-func handleJobStatus(jobs *jobstore.Store) func(e *core.RequestEvent) error {
+// async job's current status/result - either one of polyglot's own local
+// jobs (catalog-reconcile), or, when ?datasource= is given (mirroring
+// /query's own ?datasource= convention), a proxied poll to that
+// datasource's own FunctionRunner.JobStatus (see internal/polyglot/
+// registry.go's FunctionJobStatus) - e.g. a job POST /warm started.
+func handleJobStatus(jobs *jobstore.Store, reg *Registry) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		id := e.Request.URL.Query().Get("id")
 		if id == "" {
 			return e.BadRequestError("id query parameter is required", nil)
+		}
+
+		if dsName := e.Request.URL.Query().Get("datasource"); dsName != "" {
+			job, err := reg.FunctionJobStatus(e.Request.Context(), dsName, id)
+			if err != nil {
+				return functionErrorResponse(e, err)
+			}
+			return e.JSON(http.StatusOK, job)
 		}
 
 		job, ok := jobs.Get(id)

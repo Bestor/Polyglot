@@ -22,6 +22,16 @@ type fakeProvider struct {
 	secretConfig bool
 	catalog      []dataprovider.TableCatalog
 	newErr       error
+	// functionsCapable, when true, makes New return a *fakeFunctionInstance
+	// (implementing dataprovider.FunctionRunner) instead of a plain
+	// *fakeInstance - existing fakeProvider{...} call sites that don't set
+	// this are unaffected.
+	functionsCapable bool
+	functions        []dataprovider.FunctionCatalog
+	runFunctionJob   jobstore.Job
+	runFunctionErr   error
+	jobStatusJob     jobstore.Job
+	jobStatusErr     error
 }
 
 func (p fakeProvider) Type() string { return p.typ }
@@ -35,7 +45,18 @@ func (p fakeProvider) New(ctx context.Context, config map[string]any) (dataprovi
 	if _, ok := config["api_key"].(string); !ok {
 		return nil, errors.New("api_key is required")
 	}
-	return &fakeInstance{catalog: p.catalog}, nil
+	base := &fakeInstance{catalog: p.catalog}
+	if p.functionsCapable {
+		return &fakeFunctionInstance{
+			fakeInstance:   base,
+			functions:      p.functions,
+			runFunctionJob: p.runFunctionJob,
+			runFunctionErr: p.runFunctionErr,
+			jobStatusJob:   p.jobStatusJob,
+			jobStatusErr:   p.jobStatusErr,
+		}, nil
+	}
+	return base, nil
 }
 
 type fakeInstance struct {
@@ -50,6 +71,30 @@ func (i *fakeInstance) Query(ctx context.Context, sqlText string) (ai.QueryResul
 	return ai.QueryResult{}, nil
 }
 func (i *fakeInstance) Close() error { i.closed = true; return nil }
+
+// fakeFunctionInstance layers dataprovider.FunctionRunner onto a plain
+// *fakeInstance via embedding, so tests that don't care about functions
+// keep using fakeInstance directly and unmodified.
+type fakeFunctionInstance struct {
+	*fakeInstance
+	functions      []dataprovider.FunctionCatalog
+	runFunctionJob jobstore.Job
+	runFunctionErr error
+	jobStatusJob   jobstore.Job
+	jobStatusErr   error
+}
+
+func (i *fakeFunctionInstance) Functions(ctx context.Context) ([]dataprovider.FunctionCatalog, error) {
+	return i.functions, nil
+}
+func (i *fakeFunctionInstance) RunFunction(ctx context.Context, name string, args map[string]any) (jobstore.Job, error) {
+	return i.runFunctionJob, i.runFunctionErr
+}
+func (i *fakeFunctionInstance) JobStatus(ctx context.Context, id string) (jobstore.Job, error) {
+	return i.jobStatusJob, i.jobStatusErr
+}
+
+var _ dataprovider.FunctionRunner = (*fakeFunctionInstance)(nil)
 
 // fakeVault is a hermetic, in-memory vaultClient for tests - no real
 // OpenBao needed.
@@ -254,7 +299,22 @@ func TestRegistryRehydrate(t *testing.T) {
 	if _, ok := reg2.Instance("widgets"); !ok {
 		t.Fatal("expected widgets to be rehydrated and active")
 	}
+
+	// Rehydrate's internal Onboard call fires its own async reconcile
+	// goroutine (see startReconcile) but doesn't expose that job's id back
+	// to the caller, so there's no id to waitForJob on here - a short,
+	// generous wait avoids the test's own t.Cleanup(app.Cleanup) closing
+	// the app out from under that still-running goroutine (observed as a
+	// real, if intermittent, SIGSEGV panic - the reconcile work itself is
+	// in-memory-only and near-instant, so this is overwhelmingly reliable
+	// in practice, not a source of new flakiness).
+	waitForNoInFlightWork()
 }
+
+// waitForNoInFlightWork gives a fire-and-forget reconcile goroutine
+// (started by Rehydrate, which doesn't expose its job id) time to finish
+// before a test's own app.Cleanup runs - see the callers' comments.
+func waitForNoInFlightWork() { time.Sleep(50 * time.Millisecond) }
 
 // TestRegistryRehydrate_LegacyPlaintextSecretSelfMigrates proves the
 // simplification over an earlier design pass: no separate migration pass
@@ -284,6 +344,7 @@ func TestRegistryRehydrate_LegacyPlaintextSecretSelfMigrates(t *testing.T) {
 	if err := reg.Rehydrate(context.Background(), app); err != nil {
 		t.Fatalf("Rehydrate: %v", err)
 	}
+	waitForNoInFlightWork()
 
 	if _, ok := reg.Instance("widgets"); !ok {
 		t.Fatal("expected widgets to be rehydrated despite the legacy plaintext secret")
@@ -306,5 +367,119 @@ func TestRegistryRehydrate_LegacyPlaintextSecretSelfMigrates(t *testing.T) {
 	}
 	if got, err := vc.Read(context.Background(), "datasources/widgets/api_key"); err != nil || got != "plaintext-legacy-secret" {
 		t.Errorf("expected the legacy secret's real value to have been written to vault, got %q, err %v", got, err)
+	}
+}
+
+func TestRegistryRunFunction(t *testing.T) {
+	app := newTestApp(t)
+	provider := fakeProvider{
+		typ:              "widgets",
+		functionsCapable: true,
+		runFunctionJob:   jobstore.Job{ID: "job1", Datasource: "widgets", Function: "sync", Status: jobstore.Running},
+	}
+	reg, jobs := newTestRegistry(map[string]dataprovider.Provider{"widgets": provider})
+
+	resp, err := reg.Onboard(context.Background(), app, "my_widgets", "widgets", map[string]any{"api_key": "k"})
+	if err != nil {
+		t.Fatalf("Onboard: %v", err)
+	}
+	waitForJob(t, jobs, resp.ReconcileJobID)
+
+	job, err := reg.RunFunction(context.Background(), "my_widgets", "sync", map[string]any{"x": 1})
+	if err != nil {
+		t.Fatalf("RunFunction: %v", err)
+	}
+	if job.ID != "job1" || job.Status != jobstore.Running {
+		t.Errorf("unexpected job: %+v", job)
+	}
+}
+
+// TestRegistryRunFunction_OverwritesJobDatasource proves the remote's own
+// self-labeled Job.Datasource never leaks through unchanged - it must
+// always reflect the name this instance was actually onboarded under here,
+// not whatever the remote itself happened to stamp.
+func TestRegistryRunFunction_OverwritesJobDatasource(t *testing.T) {
+	app := newTestApp(t)
+	provider := fakeProvider{
+		typ:              "widgets",
+		functionsCapable: true,
+		runFunctionJob:   jobstore.Job{ID: "job1", Datasource: "some-other-remote-self-label", Function: "sync"},
+	}
+	reg, jobs := newTestRegistry(map[string]dataprovider.Provider{"widgets": provider})
+
+	resp, err := reg.Onboard(context.Background(), app, "my_widgets", "widgets", map[string]any{"api_key": "k"})
+	if err != nil {
+		t.Fatalf("Onboard: %v", err)
+	}
+	waitForJob(t, jobs, resp.ReconcileJobID)
+
+	job, err := reg.RunFunction(context.Background(), "my_widgets", "sync", nil)
+	if err != nil {
+		t.Fatalf("RunFunction: %v", err)
+	}
+	if job.Datasource != "my_widgets" {
+		t.Errorf("job.Datasource = %q, want the onboarded name %q", job.Datasource, "my_widgets")
+	}
+}
+
+func TestRegistryRunFunction_UnknownDatasource(t *testing.T) {
+	reg, _ := newTestRegistry(map[string]dataprovider.Provider{})
+
+	_, err := reg.RunFunction(context.Background(), "nope", "sync", nil)
+	if !errors.Is(err, errUnknownDatasource) {
+		t.Errorf("expected errUnknownDatasource, got %v", err)
+	}
+}
+
+func TestRegistryRunFunction_DatasourceNotFunctionCapable(t *testing.T) {
+	app := newTestApp(t)
+	provider := fakeProvider{typ: "widgets"} // functionsCapable: false
+	reg, jobs := newTestRegistry(map[string]dataprovider.Provider{"widgets": provider})
+
+	resp, err := reg.Onboard(context.Background(), app, "widgets", "widgets", map[string]any{"api_key": "k"})
+	if err != nil {
+		t.Fatalf("Onboard: %v", err)
+	}
+	waitForJob(t, jobs, resp.ReconcileJobID)
+
+	_, err = reg.RunFunction(context.Background(), "widgets", "sync", nil)
+	if !errors.Is(err, errFunctionsNotSupported) {
+		t.Errorf("expected errFunctionsNotSupported, got %v", err)
+	}
+}
+
+func TestRegistryFunctionJobStatus(t *testing.T) {
+	app := newTestApp(t)
+	provider := fakeProvider{
+		typ:              "widgets",
+		functionsCapable: true,
+		jobStatusJob:     jobstore.Job{ID: "job1", Datasource: "irrelevant", Status: jobstore.Succeeded, Summary: "done"},
+	}
+	reg, jobs := newTestRegistry(map[string]dataprovider.Provider{"widgets": provider})
+
+	resp, err := reg.Onboard(context.Background(), app, "my_widgets", "widgets", map[string]any{"api_key": "k"})
+	if err != nil {
+		t.Fatalf("Onboard: %v", err)
+	}
+	waitForJob(t, jobs, resp.ReconcileJobID)
+
+	job, err := reg.FunctionJobStatus(context.Background(), "my_widgets", "job1")
+	if err != nil {
+		t.Fatalf("FunctionJobStatus: %v", err)
+	}
+	if job.Status != jobstore.Succeeded || job.Summary != "done" {
+		t.Errorf("unexpected job: %+v", job)
+	}
+	if job.Datasource != "my_widgets" {
+		t.Errorf("job.Datasource = %q, want the onboarded name %q", job.Datasource, "my_widgets")
+	}
+}
+
+func TestRegistryFunctionJobStatus_UnknownDatasource(t *testing.T) {
+	reg, _ := newTestRegistry(map[string]dataprovider.Provider{})
+
+	_, err := reg.FunctionJobStatus(context.Background(), "nope", "job1")
+	if !errors.Is(err, errUnknownDatasource) {
+		t.Errorf("expected errUnknownDatasource, got %v", err)
 	}
 }

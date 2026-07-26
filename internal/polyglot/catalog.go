@@ -76,6 +76,20 @@ func reconcileCatalog(ctx context.Context, app core.App, datasourceName string, 
 		}
 	}
 
+	if fr, ok := inst.(dataprovider.FunctionRunner); ok {
+		liveFunctions, err := fr.Functions(ctx)
+		if err != nil {
+			return fmt.Errorf("catalog: introspecting functions for %q: %w", datasourceName, err)
+		}
+		functionsCol, err := app.FindCachedCollectionByNameOrId("functions")
+		if err != nil {
+			return err
+		}
+		if err := reconcileFunctions(app, functionsCol, dsRec, liveFunctions); err != nil {
+			return fmt.Errorf("catalog: reconciling functions for %q: %w", datasourceName, err)
+		}
+	}
+
 	return nil
 }
 
@@ -120,6 +134,52 @@ func reconcileColumns(app core.App, columnsCol *core.Collection, tableRec *core.
 		if !liveNames[name] {
 			if err := app.Delete(rec); err != nil {
 				return fmt.Errorf("deleting stale column %q: %w", name, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// reconcileFunctions upserts the functions catalog for dsRec, mirroring
+// reconcileColumns' upsert/delete-by-name structure, with one deliberate
+// difference: description/args always mirror the live source
+// unconditionally (no change-detection before Save, unlike
+// reconcileColumns' scalar-type check) - diffing a nested args JSON blob
+// isn't worth the complexity, and the only cost is functions.updated
+// bumping on an otherwise-idle reconcile pass, which nothing depends on.
+// query_guidance is never touched here, same protection tables/columns get.
+func reconcileFunctions(app core.App, functionsCol *core.Collection, dsRec *core.Record, live []dataprovider.FunctionCatalog) error {
+	existing, err := app.FindRecordsByFilter("functions", "datasource = {:ds}", "", 0, 0, dbx.Params{"ds": dsRec.Id})
+	if err != nil {
+		return err
+	}
+	existingByName := make(map[string]*core.Record, len(existing))
+	for _, f := range existing {
+		existingByName[f.GetString("name")] = f
+	}
+
+	liveNames := make(map[string]bool, len(live))
+	for _, f := range live {
+		liveNames[f.Name] = true
+
+		rec, ok := existingByName[f.Name]
+		if !ok {
+			rec = core.NewRecord(functionsCol)
+			rec.Set("datasource", dsRec.Id)
+			rec.Set("name", f.Name)
+		}
+		rec.Set("description", f.Description)
+		rec.Set("args", f.Args)
+		if err := app.Save(rec); err != nil {
+			return fmt.Errorf("saving function %q: %w", f.Name, err)
+		}
+	}
+
+	for name, rec := range existingByName {
+		if !liveNames[name] {
+			if err := app.Delete(rec); err != nil {
+				return fmt.Errorf("deleting stale function %q: %w", name, err)
 			}
 		}
 	}

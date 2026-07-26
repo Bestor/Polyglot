@@ -100,6 +100,47 @@ func handleSchema(app core.App) func(e *core.RequestEvent) error {
 	}
 }
 
+type functionArgResponse struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Description string `json:"description"`
+	Required    bool   `json:"required"`
+}
+
+type functionResponse struct {
+	Name        string                `json:"name"`
+	Description string                `json:"description"`
+	Args        []functionArgResponse `json:"args"`
+}
+
+type functionsResponse struct {
+	Functions []functionResponse `json:"functions"`
+}
+
+// buildFunctionsResponse maps valorant.Functions() to a pure, JSON-ready
+// shape (no Run field, which isn't serializable) - factored out of
+// handleFunctions so it's unit-testable without a core.RequestEvent.
+func buildFunctionsResponse(functions []valorant.Function) functionsResponse {
+	resp := functionsResponse{Functions: make([]functionResponse, 0, len(functions))}
+	for _, f := range functions {
+		args := make([]functionArgResponse, 0, len(f.Args))
+		for _, a := range f.Args {
+			args = append(args, functionArgResponse{Name: a.Name, Type: a.Type, Description: a.Description, Required: a.Required})
+		}
+		resp.Functions = append(resp.Functions, functionResponse{Name: f.Name, Description: f.Description, Args: args})
+	}
+	return resp
+}
+
+// handleFunctions implements GET /functions: lists every Function's
+// Name/Description/Args - what core polyglot's httpsql.Instance.Functions
+// calls to build its own functions catalog, mirroring handleSchema/Catalog.
+func handleFunctions(functions []valorant.Function) func(e *core.RequestEvent) error {
+	return func(e *core.RequestEvent) error {
+		return e.JSON(http.StatusOK, buildFunctionsResponse(functions))
+	}
+}
+
 type warmRequest struct {
 	Function string         `json:"function"`
 	Args     map[string]any `json:"args"`

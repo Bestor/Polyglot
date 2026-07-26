@@ -8,6 +8,7 @@
 package httpsql
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 
 	"val-analyzer/internal/ai"
 	"val-analyzer/internal/dataprovider"
+	"val-analyzer/internal/jobstore"
 )
 
 // Type is this provider's stable slug, used as the registry key.
@@ -81,6 +83,55 @@ func (i *instance) Query(ctx context.Context, sqlText string) (ai.QueryResult, e
 
 func (i *instance) Close() error { return nil } // stateless HTTP client, nothing to release
 
+type functionsResponse struct {
+	Functions []dataprovider.FunctionCatalog `json:"functions"`
+}
+
+func (i *instance) Functions(ctx context.Context) ([]dataprovider.FunctionCatalog, error) {
+	var out functionsResponse
+	if err := i.get(ctx, "/functions", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Functions, nil
+}
+
+type warmRequest struct {
+	Function string         `json:"function"`
+	Args     map[string]any `json:"args"`
+}
+
+func (i *instance) RunFunction(ctx context.Context, name string, args map[string]any) (jobstore.Job, error) {
+	var job jobstore.Job
+	err := i.post(ctx, "/warm", warmRequest{Function: name, Args: args}, &job)
+	return job, err
+}
+
+func (i *instance) JobStatus(ctx context.Context, id string) (jobstore.Job, error) {
+	var job jobstore.Job
+	err := i.get(ctx, "/warm", url.Values{"id": {id}}, &job)
+	return job, err
+}
+
+var _ dataprovider.FunctionRunner = (*instance)(nil)
+
+// remoteError builds a *dataprovider.RemoteError from a non-2xx response,
+// preserving the remote's own status code so callers (e.g. polyglot's
+// handlers) can decide how to react instead of every failure collapsing to
+// a generic error. Best-effort decodes the remote's own PocketBase-shaped
+// {"message": "..."} error envelope for the message text, falling back to
+// a generic one if the body isn't shaped that way.
+func remoteError(target string, resp *http.Response) error {
+	var envelope struct {
+		Message string `json:"message"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&envelope)
+	msg := envelope.Message
+	if msg == "" {
+		msg = fmt.Sprintf("%q returned status %d", target, resp.StatusCode)
+	}
+	return &dataprovider.RemoteError{StatusCode: resp.StatusCode, Message: msg}
+}
+
 func (i *instance) get(ctx context.Context, path string, query url.Values, out any) error {
 	target := i.baseURL + path
 	if query != nil {
@@ -100,9 +151,41 @@ func (i *instance) get(ctx context.Context, path string, query url.Values, out a
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("http_sql: %q returned status %d", target, resp.StatusCode)
+		return remoteError(target, resp)
 	}
 
+	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+		return fmt.Errorf("http_sql: decoding response from %q: %w", target, err)
+	}
+	return nil
+}
+
+func (i *instance) post(ctx context.Context, path string, body, out any) error {
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("http_sql: encoding request body for %q: %w", path, err)
+	}
+
+	target := i.baseURL + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(buf))
+	if err != nil {
+		return fmt.Errorf("http_sql: building request to %q: %w", target, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+i.token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := i.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("http_sql: calling %q: %w", target, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return remoteError(target, resp)
+	}
+	if out == nil {
+		return nil
+	}
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("http_sql: decoding response from %q: %w", target, err)
 	}

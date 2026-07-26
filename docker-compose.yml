@@ -43,6 +43,21 @@ services:
       # unchanged, so the droplet's existing cached match data carries
       # over with zero backfill on cutover.
       - ${PB_DATA_HOST_PATH:-valorantapi-data}:/app/pb_data
+    # depends_on's default condition only waits for this container to
+    # *start*, not for the Go binary inside to finish PocketBase's own
+    # migrations and actually bind :8093 - which can take a few seconds
+    # longer than sibling containers take to start. Without this,
+    # cachewarmer's "run a pass immediately on startup" and polyglot's own
+    # boot-time auto-onboard call (both hit valorantapi right away) can
+    # race ahead of it and fail with connection refused - observed live in
+    # production. /api/health is PocketBase's own built-in endpoint, no
+    # custom code needed.
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8093/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
   openbao:
     image: openbao/openbao:2.5 # pinned, not :latest
@@ -96,8 +111,16 @@ services:
     ports:
       - "8091:8091"
     depends_on:
-      - openbao
-      - valorantapi
+      openbao:
+        condition: service_started
+      # polyglot's own boot hook calls autoOnboardValorantAPIFromEnv,
+      # which does a real round trip to valorantapi (a live Catalog()
+      # call) - if valorantapi isn't actually ready yet, that call fails
+      # and polyglot's whole boot hook returns an error, which is fatal
+      # (log.Fatal in cmd/polyglot/main.go). service_healthy (not the
+      # default service_started) is required here, not just nice-to-have.
+      valorantapi:
+        condition: service_healthy
     volumes:
       # A separate, fresh volume from valorantapi's - polyglot's own
       # PocketBase never holds Valorant's domain data, only its own
@@ -174,7 +197,13 @@ services:
     volumes:
       - ./cmd/cachewarmer/players.txt:/app/players.txt
     depends_on:
-      - valorantapi
+      valorantapi:
+        # Its own first warm pass runs immediately on startup (see
+        # internal/cachewarmer/run.go) - without waiting for valorantapi
+        # to be actually ready (not just started), that first pass races
+        # ahead of valorantapi's own PocketBase boot and fails with
+        # connection refused, exactly as observed in production.
+        condition: service_healthy
 
 volumes:
   valorantapi-data:

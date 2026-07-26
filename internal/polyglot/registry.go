@@ -26,10 +26,11 @@ const datasourcesCollection = "datasources"
 var reservedNames = map[string]bool{"datasources": true, "tables": true, "columns": true}
 
 var (
-	errUnknownProviderType = errors.New("unknown provider type")
-	errInvalidConfig       = errors.New("invalid config")
-	errReservedName        = errors.New("name is reserved")
-	errUnknownDatasource   = errors.New("unknown datasource")
+	errUnknownProviderType   = errors.New("unknown provider type")
+	errInvalidConfig         = errors.New("invalid config")
+	errReservedName          = errors.New("name is reserved")
+	errUnknownDatasource     = errors.New("unknown datasource")
+	errFunctionsNotSupported = errors.New("datasource does not support functions")
 )
 
 // reconcileTimeout bounds how long a single background catalog-reconcile
@@ -202,6 +203,58 @@ func (r *Registry) Instance(name string) (dataprovider.Instance, bool) {
 	defer r.mu.RUnlock()
 	inst, ok := r.instances[name]
 	return inst, ok
+}
+
+// RunFunction proxies a named-function trigger to name's own
+// dataprovider.FunctionRunner capability, if it has one. Deliberately
+// synchronous, no goroutine and no local jobstore entry (unlike
+// startReconcile) - the remote side (e.g. valorantapi's own /warm) is
+// already async, so wrapping it again here would just orphan the real job
+// id behind a second, meaningless one.
+func (r *Registry) RunFunction(ctx context.Context, name, function string, args map[string]any) (jobstore.Job, error) {
+	r.mu.RLock()
+	inst, ok := r.instances[name]
+	r.mu.RUnlock()
+	if !ok {
+		return jobstore.Job{}, fmt.Errorf("%w: %q", errUnknownDatasource, name)
+	}
+	fr, ok := inst.(dataprovider.FunctionRunner)
+	if !ok {
+		return jobstore.Job{}, fmt.Errorf("%w: %q", errFunctionsNotSupported, name)
+	}
+	job, err := fr.RunFunction(ctx, function, args)
+	if err != nil {
+		return jobstore.Job{}, err
+	}
+	// The remote's own Job.Datasource reflects its own local convention
+	// (e.g. valorantapi always self-labels "valorant" - see its own
+	// handleWarm), which need not match the name this datasource was
+	// actually onboarded under here - Registry explicitly supports
+	// multiple datasources sharing one provider type. Overwriting keeps
+	// GET /jobs?datasource=X self-consistent with what was passed in.
+	job.Datasource = name
+	return job, nil
+}
+
+// FunctionJobStatus proxies a job-status poll to name's own
+// dataprovider.FunctionRunner capability.
+func (r *Registry) FunctionJobStatus(ctx context.Context, name, jobID string) (jobstore.Job, error) {
+	r.mu.RLock()
+	inst, ok := r.instances[name]
+	r.mu.RUnlock()
+	if !ok {
+		return jobstore.Job{}, fmt.Errorf("%w: %q", errUnknownDatasource, name)
+	}
+	fr, ok := inst.(dataprovider.FunctionRunner)
+	if !ok {
+		return jobstore.Job{}, fmt.Errorf("%w: %q", errFunctionsNotSupported, name)
+	}
+	job, err := fr.JobStatus(ctx, jobID)
+	if err != nil {
+		return jobstore.Job{}, err
+	}
+	job.Datasource = name
+	return job, nil
 }
 
 // List describes every compiled-in provider type plus every active

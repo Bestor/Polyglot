@@ -75,6 +75,7 @@ func main() {
 		group.BindFunc(httpauth.RequireToken(cfg.APIAuthToken))
 		group.GET("/query", handleQuery(query))
 		group.GET("/schema", handleSchema(se.App))
+		group.GET("/functions", handleFunctions(functions))
 		group.POST("/warm", handleWarm(functions, jobs))
 		group.GET("/warm", handleWarmStatus(jobs))
 

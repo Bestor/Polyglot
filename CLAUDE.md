@@ -257,23 +257,37 @@ explicit trade-off.
   `POST /datasources/annotate`, `POST /tables/annotate`, `POST /columns/annotate` patch curated
   description/query_guidance fields (pointer fields, so omitted vs. explicitly-cleared are
   distinguishable).
+- `functions.go` — `POST /warm` (`{datasource, function, args}`) proxies a named-function trigger
+  through to `datasource`'s own `dataprovider.FunctionRunner` capability (see below) and returns the
+  remote's own `Job`, 202; `POST /functions/annotate` patches a function's curated `query_guidance`
+  only (no `description` - see below for why).
 - `query.go` — `GET /query` optionally routes via `?datasource=` to that instance's own `Query`;
   omitting it queries polyglot's own bookkeeping db. `reservedTablePattern` (blocking
   `datasources`/`tables`/`columns` by name) applies **unconditionally, on every path** - not just the
   default one - since nothing here assumes any datasource's connection is physically incapable of
   reaching polyglot's own tables.
-- `metadata.go` — `GET /metadata` reads the persisted `datasources`/`tables`/`columns` snapshot
-  directly (fast, local `FindRecords` calls), **never** a live `Instance.Catalog()` call - keeps
-  this endpoint's latency independent of any one datasource's health/speed, even a slow or
-  temporarily-unreachable network one.
-- `routes.go` — also exposes `GET /jobs?id=` (renamed from the old `GET /warm?id=` - "warm" no
-  longer describes what polyglot's own async jobs are for, since `/warm` itself doesn't live here
-  anymore).
+- `metadata.go` — `GET /metadata` reads the persisted `datasources`/`tables`/`columns`/`functions`
+  snapshot directly (fast, local `FindRecords` calls), **never** a live `Instance.Catalog()`/
+  `Instance.Functions()` call - keeps this endpoint's latency independent of any one datasource's
+  health/speed, even a slow or temporarily-unreachable network one.
+- `routes.go` — also exposes `GET /jobs?id=[&datasource=]`: omitting `datasource` polls polyglot's
+  own local job tracking (post-onboard/`/datasources/reconcile` jobs); passing it proxies the poll to
+  that datasource's own job tracking instead (e.g. a job `POST /warm` started) - mirrors `/query`'s
+  own `?datasource=` routing convention.
 
-There is no `/warm` on polyglot itself, and no `Function`/`Instance.Functions()` concept in
-`internal/dataprovider` - both were built for the old ingest-style "provider declares PocketBase
-collections, polyglot creates and owns them" pattern, which left with Valorant. Ingest/warm triggers
-now live entirely on `cmd/valorantapi`.
+**`internal/dataprovider.FunctionRunner`** is an optional `Instance` capability (same pattern as the
+existing `RowSampler`) for triggering/polling named background work on a datasource - `Functions(ctx)`
+(live catalog, only ever called by the async reconcile job, mirroring `Catalog`), `RunFunction(ctx,
+name, args) (jobstore.Job, error)` (must return immediately, never block until the work finishes -
+the remote side is already async), `JobStatus(ctx, id) (jobstore.Job, error)`. Not part of `Instance`
+itself, since most providers (a plain SQLite file) have nothing to warm. `internal/providers/httpsql`
+is the only implementation today, proxying to whatever remote `GET /functions`+`POST /warm`+
+`GET /warm?id=` it's pointed at (currently only `cmd/valorantapi`) - `dataprovider.RemoteError`
+preserves that remote's exact HTTP status code through to polyglot's own handlers, so e.g. an unknown
+function name surfaces as the same 400 the remote itself produced, not a generic 500. `Registry.
+RunFunction`/`FunctionJobStatus` are deliberately synchronous proxy calls, never wrapped in their own
+goroutine/local `jobstore` entry like `startReconcile` - double-wrapping an already-async remote call
+would just orphan the real job id behind a second, meaningless one.
 
 **`cmd/valorantapi`** (`internal/valorant`) is the standalone Valorant Data API: its own embedded
 PocketBase (own `pb_data`, own migration set at `internal/valorant/migrations` - same filenames/
@@ -282,10 +296,12 @@ backfill on cutover), `ingest.Service` wired directly against it (no `dataprovid
 `Registry` layer at all - there's exactly one domain here, so that plugin abstraction is pure
 overhead). Exposes `GET /query` (`ai.NewReadOnlyExecutor` against its own db, raw `ai.QueryResult`
 JSON - a machine-to-machine contract for `internal/providers/httpsql`, not row-objects for
-mcpserver), `GET /schema` (introspects its own live collections), and `POST`/`GET /warm` (using
-`internal/jobstore`, dispatching to `functions.go`'s `resolve_player`/`sync_matches`/`sync_seasons`/
-`backfill_match_seasons` - local `Function`/`FunctionArg` types now, since this binary doesn't
-implement `dataprovider.Provider`). `HENRIK_API_KEY` etc. are plain boot-time env vars here, not
+mcpserver), `GET /schema` (introspects its own live collections), `GET /functions` (structure-only
+listing of `functions.go`'s `Function`s' `Name`/`Description`/`Args` - what `internal/providers/
+httpsql`'s `Functions` call builds `dataprovider.FunctionCatalog`s from), and `POST`/`GET /warm`
+(using `internal/jobstore`, dispatching to `functions.go`'s `resolve_player`/`sync_matches`/
+`sync_seasons`/`backfill_match_seasons` - local `Function`/`FunctionArg` types now, since this binary
+doesn't implement `dataprovider.Provider`). `HENRIK_API_KEY` etc. are plain boot-time env vars here, not
 vault-managed - deliberately: vault protection in this design is for secrets persisted into a
 queryable PocketBase collection (`datasources.config`), and this credential is held only in this
 process's memory, the same threat model `discordbot`'s/`cachewarmer`'s own plain secrets already
@@ -323,12 +339,15 @@ never drift from polyglot's actual REST contract), `server.go` registers one MCP
 `Operation` and proxies each call to a running polyglot instance over HTTP via `client.go`. It has
 no data logic of its own — the MCP client (`cmd/discordbot`) is what actually reasons about a
 question, deciding which tools to call and how to interpret the results. It only ever points at
-polyglot's own spec, never valorantapi's - an AI conversation can still query Valorant data (via
-`?datasource=valorant` routing through polyglot), but has lost the ability to trigger a fresh
-Valorant sync mid-conversation now that `/warm` lives only on valorantapi; cachewarmer's proactive
-hourly warming is the sole warming mechanism now (this was already the AI's secondary path even
-before the split - `POST /warm`'s own description always said "only call this when a human
-explicitly asks for a refresh").
+polyglot's own spec, never valorantapi's directly - an AI conversation reaches Valorant data (via
+`?datasource=valorant` routing through polyglot) and can trigger a fresh Valorant sync mid-conversation
+via `POST /warm` (`{"datasource":"valorant","function":"sync_matches",...}`), proxied through to
+valorantapi's own `/warm` - not Valorant-specific on polyglot's side, any future datasource
+implementing `dataprovider.FunctionRunner` gets the same tool for free, no mcpserver/discordbot code
+changes needed (both are purely spec/tool-list driven already). `POST /warm`'s own description still
+says "only call this when a human explicitly asks for a refresh" - cachewarmer's proactive hourly
+warming remains the primary, unattended mechanism; the AI-triggerable path is for an explicit,
+in-conversation request only.
 
 **`cmd/discordbot`** (`internal/discordbot`) is the MCP client that does the actual
 question-answering: `mcpclient.go` connects to a running `mcpserver` over Streamable HTTP

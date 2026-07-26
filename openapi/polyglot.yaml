@@ -4,10 +4,11 @@ info:
   version: "0.2.0"
   description: |
     polyglot is val-analyzer's generic Data API host: it owns a small PocketBase-embedded
-    onboarding/catalog database (which datasources exist, their tables/columns, and any
-    hand-curated descriptions or AI query guidance) and exposes a small, engine-agnostic REST
+    onboarding/catalog database (which datasources exist, their tables/columns/background actions,
+    and any hand-curated descriptions or AI query guidance) and exposes a small, engine-agnostic REST
     contract over every onboarded datasource - submit ANSI-compliant SQL to read cached data,
-    introspect the live catalog, and curate descriptions/guidance.
+    introspect the live catalog, trigger a datasource's own background data-refresh actions, and
+    curate descriptions/guidance.
 
     polyglot has no AI/reasoning logic of its own - it is a pure data API. A separate MCP server
     wraps these endpoints as tools for an AI model to call when answering a user's question.
@@ -17,8 +18,11 @@ info:
     (see `internal/dataprovider`) onboarded at runtime via `POST /datasources` - either a local
     SQLite file (`sqlite`), or another service speaking this same small query contract over the
     network (`http_sql`). Valorant's own data lives entirely in a separate standalone service,
-    `cmd/valorantapi` (its own PocketBase, its own `/query`+`/schema`+`/warm`), onboarded into
-    polyglot as an ordinary `http_sql` datasource named `valorant` - not a special case.
+    `cmd/valorantapi` (its own PocketBase, its own `/query`+`/schema`+`/functions`+`/warm`), onboarded
+    into polyglot as an ordinary `http_sql` datasource named `valorant` - not a special case.
+    `POST /warm` here is a thin, generic proxy to whichever onboarded datasource implements a
+    background-action capability (`dataprovider.FunctionRunner`) - currently only Valorant, but
+    nothing about the endpoint itself is Valorant-specific.
 
 servers:
   - url: http://localhost:8090
@@ -108,22 +112,29 @@ paths:
   /metadata:
     get:
       operationId: getMetadata
-      summary: Describe every onboarded datasource's tables/columns and curated guidance
+      summary: Describe every onboarded datasource's tables/columns/functions and curated guidance
       description: |
         Returns polyglot's persisted catalog snapshot - every onboarded datasource's
-        connection-level description/query_guidance, plus every table's columns, types, and any
-        hand-curated description/query_guidance. This is built from a snapshot kept current by an
-        async reconciliation pass (see POST /datasources and POST /datasources/reconcile), not a
-        live call into every datasource, so this endpoint's latency never depends on any one
-        datasource's health or speed - it's the discovery mechanism an MCP client or AI model uses
-        to know what it can query, without reading polyglot's source or waiting on a slow/
-        unreachable connection.
+        connection-level description/query_guidance, every table's columns/types/hand-curated
+        description/query_guidance, and every background action that datasource exposes (if any -
+        most don't). This is built from a snapshot kept current by an async reconciliation pass (see
+        POST /datasources and POST /datasources/reconcile), not a live call into every datasource, so
+        this endpoint's latency never depends on any one datasource's health or speed - it's the
+        discovery mechanism an MCP client or AI model uses to know what it can query (and what it can
+        trigger via POST /warm), without reading polyglot's source or waiting on a slow/unreachable
+        connection.
 
         `query_guidance` is distinct from `description`: description says what a table/connection
         means, query_guidance says how to query it well (e.g. "this connection is a columnar OLAP
         warehouse - always filter on the partition column" at the datasource level, or "partitioned
         by event_date - always filter on it" at the table level). Both start empty until curated via
         POST /datasources/annotate, POST /tables/annotate, or POST /columns/annotate.
+
+        `functions[]` lists whatever named background actions the datasource itself exposes (e.g. the
+        Valorant datasource's `sync_matches`) - each entry's `name`/`datasource`/`args` are exactly
+        what POST /warm expects. `description` here is not hand-curated (it always mirrors what the
+        datasource itself reports and refreshes every reconcile); only `query_guidance` is ever
+        curated, via POST /functions/annotate.
       responses:
         "200":
           description: Current catalog snapshot.
@@ -151,6 +162,17 @@ paths:
                         name: name
                         type: TEXT
                         description: "Riot ID name, before the #."
+                functions:
+                  - id: "rec_jkl012"
+                    name: sync_matches
+                    description: "Fetch and cache a player's matches from the upstream Valorant API..."
+                    datasource: valorant
+                    query_guidance: ""
+                    args:
+                      - name: player_tag
+                        type: string
+                        description: "The player's Riot ID as name#tag, e.g. \"Orbest#NA1\"."
+                        required: true
         "401":
           $ref: "#/components/responses/Unauthorized"
 
@@ -420,24 +442,142 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /warm:
+    post:
+      operationId: warm
+      summary: Trigger a named background data-refresh action on an onboarded datasource
+      description: |
+        Proxies a named-function trigger through to `datasource`'s own background-action capability
+        (not every datasource has one - most don't). This is how a fresh sync gets triggered - e.g.
+        pulling a Valorant player's latest matches from the upstream HenrikDev API - since plain
+        `query` only ever reads whatever is already cached.
+
+        Find valid `datasource`/`function`/`args` values via GET /metadata's `functions[]` list:
+        each entry's `datasource` and `name` are exactly what to pass here, and `args[]` documents
+        what that function accepts (name/type/description/required).
+
+        IMPORTANT - only call this when a human has explicitly asked you to refresh, update, or sync
+        data. Never call it just because a `query` came back empty or incomplete: this endpoint is
+        asynchronous and returns a `Job` immediately, long before the actual work finishes - it will
+        not produce usable data in time to help answer the current question. If the data you need
+        isn't cached, say so plainly instead of trying to warm it yourself mid-question. Poll the
+        returned job via `GET /jobs?id=&datasource=` if you need to confirm it completed, e.g. because
+        the user is waiting on that specifically.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WarmRequest"
+            example:
+              datasource: valorant
+              function: sync_matches
+              args:
+                player_tag: "OrBest#NA1"
+      responses:
+        "202":
+          description: Accepted and running in the background.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+              example:
+                id: "aB3dEfGhIjKlMnO"
+                datasource: valorant
+                function: sync_matches
+                status: running
+                created_at: "2026-07-23T01:23:15Z"
+                updated_at: "2026-07-23T01:23:15Z"
+        "400":
+          description: Missing datasource/function, unknown datasource, the datasource doesn't support background actions, or the datasource itself rejected the call (e.g. unknown function name or a missing required arg).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /functions/annotate:
+    post:
+      operationId: annotateFunction
+      summary: Curate one function's query_guidance
+      description: |
+        Patches the query_guidance field if present in the request body. No description field here
+        (unlike tables/annotate/datasources/annotate) - a function's description already comes from
+        the datasource itself and is refreshed automatically every reconcile, so there's nothing to
+        hand-curate there; query_guidance is for extra operational notes beyond that (e.g. "never set
+        full_history without explicit user confirmation - it can take a very long time"). `id` is a
+        function's id from GET /metadata's `functions[].id`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AnnotateFunctionRequest"
+            example:
+              id: "rec_jkl012"
+              query_guidance: "Only pass full_history=true if the user explicitly asks for a player's entire match history - it can take several minutes."
+      responses:
+        "200":
+          description: Annotation saved.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id:
+                    type: string
+        "400":
+          description: Missing id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Unknown function id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /jobs:
     get:
       operationId: getJob
       summary: Check the status/result of a background job
       description: |
-        Returns the current status of a job started by POST /datasources (the automatic
-        post-onboard reconcile) or POST /datasources/reconcile: `running`, `succeeded` (with
-        `summary`/`data` populated), or `failed` (with `error` populated). Not used for triggering
-        or checking Valorant data syncs - those run on the standalone Valorant API's own /warm
-        endpoint, not through polyglot at all.
+        Returns the current status of a job: `running`, `succeeded` (with `summary`/`data`
+        populated), or `failed` (with `error` populated).
+
+        Two different kinds of job share this one polling endpoint, distinguished by whether
+        `datasource` is given:
+        - Omit `datasource` for a job started by POST /datasources (the automatic post-onboard
+          reconcile) or POST /datasources/reconcile - checked against polyglot's own local job
+          tracking.
+        - Pass `datasource` for a job started by POST /warm - the poll is proxied straight through
+          to that datasource's own job tracking (e.g. the standalone Valorant API's own /warm), so
+          it must be the same `datasource` value the POST /warm call used.
       parameters:
         - name: id
           in: query
           required: true
           schema:
             type: string
-          description: A job id returned by POST /datasources or POST /datasources/reconcile.
+          description: A job id returned by POST /datasources, POST /datasources/reconcile, or POST /warm.
           example: "aB3dEfGhIjKlMnO"
+        - name: datasource
+          in: query
+          required: false
+          schema:
+            type: string
+          description: |
+            Required if, and only if, `id` came from POST /warm - name of the datasource that job
+            was started against (the same value passed to POST /warm). Omit entirely for a
+            POST /datasources / POST /datasources/reconcile job id - passing a datasource for one of
+            those is not meaningful and will fail to find the job.
+          example: valorant
       responses:
         "200":
           description: The job exists; check `status` for whether it's finished.
@@ -454,7 +594,7 @@ paths:
                 created_at: "2026-07-12T18:04:05Z"
                 updated_at: "2026-07-12T18:04:41Z"
         "400":
-          description: Missing id query parameter.
+          description: Missing id query parameter, or datasource is set but unknown/doesn't support background actions.
           content:
             application/json:
               schema:
@@ -462,7 +602,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
-          description: No job with that id is currently tracked (unknown id, or its result was evicted after finishing).
+          description: No job with that id is currently tracked (unknown id, or its result was evicted after finishing) - for a datasource-proxied job, this reflects that datasource's own job tracking, not polyglot's.
           content:
             application/json:
               schema:
@@ -534,7 +674,7 @@ components:
           type: string
         function:
           type: string
-          description: 'Currently always "reconcile_catalog" - the only async job kind polyglot itself runs.'
+          description: "The name of the action this job runs - either \"reconcile_catalog\" (polyglot's own post-onboard/POST /datasources/reconcile jobs) or, for a job started by POST /warm, whatever function name was passed to it (e.g. \"sync_matches\")."
         status:
           type: string
           enum: [running, succeeded, failed]
@@ -607,9 +747,47 @@ components:
           type: string
           description: Hand-authored AI guidance on how to query this connection well, distinct from any one table's own; empty until curated.
 
+    FunctionArgDescription:
+      type: object
+      required: [name, type, required]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          description: A JSON-schema type, e.g. "string" | "integer" | "boolean".
+        description:
+          type: string
+        required:
+          type: boolean
+
+    FunctionDescription:
+      type: object
+      required: [id, name, datasource, args]
+      properties:
+        id:
+          type: string
+          description: This function's record id - pass to POST /functions/annotate to curate its query_guidance.
+        name:
+          type: string
+          description: Pass as `function` to POST /warm.
+        description:
+          type: string
+          description: What this action does - unlike table/column description, this always mirrors the datasource's own text and cannot be hand-edited.
+        datasource:
+          type: string
+          description: The datasource (by name) this function belongs to - pass as `datasource` to POST /warm.
+        query_guidance:
+          type: string
+          description: Hand-authored AI guidance on when/how to call this function well (distinct from description); empty until curated via POST /functions/annotate.
+        args:
+          type: array
+          items:
+            $ref: "#/components/schemas/FunctionArgDescription"
+
     MetadataResponse:
       type: object
-      required: [datasources, tables]
+      required: [datasources, tables, functions]
       properties:
         datasources:
           type: array
@@ -619,6 +797,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/TableDescription"
+        functions:
+          type: array
+          items:
+            $ref: "#/components/schemas/FunctionDescription"
 
     ConfigFieldDescription:
       type: object
@@ -749,5 +931,33 @@ components:
           type: string
           description: A column's id, from GET /metadata's tables[].columns[].id.
         description:
+          type: string
+          description: Omit to leave unchanged; send an empty string to explicitly clear it.
+
+    WarmRequest:
+      type: object
+      required: [datasource, function]
+      properties:
+        datasource:
+          type: string
+          description: An active datasource's name, from GET /metadata's functions[].datasource (or GET /datasources' active[].name).
+          example: valorant
+        function:
+          type: string
+          description: A function name from GET /metadata's functions[].name, belonging to `datasource`.
+          example: sync_matches
+        args:
+          type: object
+          description: Arguments this function expects - see GET /metadata's functions[].args for what's required/optional and their types.
+          additionalProperties: true
+
+    AnnotateFunctionRequest:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          description: A function's id, from GET /metadata's functions[].id.
+        query_guidance:
           type: string
           description: Omit to leave unchanged; send an empty string to explicitly clear it.

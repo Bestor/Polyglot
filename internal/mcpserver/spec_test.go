@@ -21,8 +21,8 @@ func TestLoadOperations(t *testing.T) {
 		byName[op.Name] = op
 	}
 
-	if len(ops) != 9 {
-		t.Fatalf("expected 9 operations, got %d: %+v", len(ops), byName)
+	if len(ops) != 11 {
+		t.Fatalf("expected 11 operations, got %d: %+v", len(ops), byName)
 	}
 
 	query, ok := byName["query"]
@@ -64,11 +64,27 @@ func TestLoadOperations(t *testing.T) {
 	if getJob.HasBody {
 		t.Error("getJob: expected HasBody false")
 	}
-	if len(getJob.Params) != 1 || getJob.Params[0].Name != "id" {
-		t.Errorf("getJob: expected a single 'id' param, got %+v", getJob.Params)
+	if len(getJob.Params) != 2 {
+		t.Errorf("getJob: expected 'id' and 'datasource' params, got %+v", getJob.Params)
 	}
+	requireStringSliceContains(t, "getJob", paramNames(getJob), "id")
+	requireStringSliceContains(t, "getJob", paramNames(getJob), "datasource")
 
-	for _, name := range []string{"reconcileDatasource", "annotateDatasource", "annotateTable", "annotateColumn", "listDatasources"} {
+	warm, ok := byName["warm"]
+	if !ok {
+		t.Fatal("missing warm operation")
+	}
+	if warm.Method != "POST" || warm.Path != "/warm" {
+		t.Errorf("warm: got method=%s path=%s", warm.Method, warm.Path)
+	}
+	if !warm.HasBody {
+		t.Error("warm: expected HasBody true")
+	}
+	warmRequired := requiredOf(warm.InputSchema)
+	requireStringSliceContains(t, "warm", warmRequired, "datasource")
+	requireStringSliceContains(t, "warm", warmRequired, "function")
+
+	for _, name := range []string{"reconcileDatasource", "annotateDatasource", "annotateTable", "annotateColumn", "annotateFunction", "listDatasources"} {
 		if _, ok := byName[name]; !ok {
 			t.Errorf("missing %s operation", name)
 		}
@@ -92,6 +108,14 @@ func TestLoadOperations(t *testing.T) {
 func requiredOf(schema map[string]any) []string {
 	raw, _ := schema["required"].([]string)
 	return raw
+}
+
+func paramNames(op Operation) []string {
+	names := make([]string, 0, len(op.Params))
+	for _, p := range op.Params {
+		names = append(names, p.Name)
+	}
+	return names
 }
 
 func requireStringSliceContains(t *testing.T, op string, haystack []string, want string) {

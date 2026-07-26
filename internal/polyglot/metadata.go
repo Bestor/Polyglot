@@ -30,9 +30,26 @@ type DatasourceGuidance struct {
 	QueryGuidance string `json:"query_guidance"`
 }
 
+type FunctionArgDescription struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Description string `json:"description"`
+	Required    bool   `json:"required"`
+}
+
+type FunctionDescription struct {
+	ID            string                   `json:"id"`
+	Name          string                   `json:"name"`
+	Description   string                   `json:"description"`
+	Datasource    string                   `json:"datasource"`
+	QueryGuidance string                   `json:"query_guidance"`
+	Args          []FunctionArgDescription `json:"args"`
+}
+
 type MetadataResponse struct {
-	Datasources []DatasourceGuidance `json:"datasources"`
-	Tables      []TableDescription   `json:"tables"`
+	Datasources []DatasourceGuidance  `json:"datasources"`
+	Tables      []TableDescription    `json:"tables"`
+	Functions   []FunctionDescription `json:"functions"`
 }
 
 // handleMetadata implements GET /metadata: describes every onboarded
@@ -98,6 +115,25 @@ func buildMetadata(app core.App) (MetadataResponse, error) {
 			Datasource:    dsNameByID[t.GetString("datasource")],
 			QueryGuidance: t.GetString("query_guidance"),
 			Columns:       columns,
+		})
+	}
+
+	functionRecords, err := app.FindAllRecords("functions")
+	if err != nil {
+		return MetadataResponse{}, err
+	}
+	for _, f := range functionRecords {
+		var args []FunctionArgDescription
+		if err := f.UnmarshalJSONField("args", &args); err != nil {
+			return MetadataResponse{}, err
+		}
+		resp.Functions = append(resp.Functions, FunctionDescription{
+			ID:            f.Id,
+			Name:          f.GetString("name"),
+			Description:   f.GetString("description"),
+			Datasource:    dsNameByID[f.GetString("datasource")],
+			QueryGuidance: f.GetString("query_guidance"),
+			Args:          args,
 		})
 	}
 

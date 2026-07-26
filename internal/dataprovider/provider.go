@@ -12,8 +12,10 @@ package dataprovider
 
 import (
 	"context"
+	"fmt"
 
 	"val-analyzer/internal/ai"
+	"val-analyzer/internal/jobstore"
 )
 
 // ConfigField self-describes one entry a Provider's config map accepts,
@@ -75,4 +77,54 @@ type Instance interface {
 // not required by Instance, since not every provider needs it.
 type RowSampler interface {
 	SampleRows(ctx context.Context, table string, n int) ([]map[string]any, error)
+}
+
+// FunctionArg documents one argument a FunctionCatalog's Run accepts. A
+// separate type from ConfigField (not shared) - ConfigField carries an
+// irrelevant Secret flag, and internal/valorant/functions.go already
+// established the precedent of a small, local, non-shared shape for this.
+type FunctionArg struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Description string `json:"description"`
+	Required    bool   `json:"required"`
+}
+
+// FunctionCatalog describes one named, invokable background action an
+// Instance exposes, e.g. valorantapi's sync_matches.
+type FunctionCatalog struct {
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Args        []FunctionArg `json:"args"`
+}
+
+// FunctionRunner is an optional capability an Instance may implement for
+// triggering and polling named background work on the underlying
+// datasource (e.g. valorantapi's own /warm) - not part of Instance itself,
+// since most providers (a plain sqlite file) have nothing to warm.
+type FunctionRunner interface {
+	// Functions returns live ground truth on what this instance can run.
+	// Only the async reconcile job (internal/polyglot/catalog.go) calls
+	// this - mirrors Instance.Catalog.
+	Functions(ctx context.Context) ([]FunctionCatalog, error)
+	// RunFunction triggers named background work and returns immediately
+	// with a Running Job snapshot to poll via JobStatus - it must never
+	// block until the work itself finishes.
+	RunFunction(ctx context.Context, name string, args map[string]any) (jobstore.Job, error)
+	// JobStatus reports a previously started job's current status/result.
+	JobStatus(ctx context.Context, id string) (jobstore.Job, error)
+}
+
+// RemoteError preserves a network-based Provider's remote HTTP status code
+// through to callers, so e.g. polyglot's handlers can return the same
+// status the remote itself already decided (400 for an unknown function or
+// missing arg, 404 for an unknown job id) instead of collapsing everything
+// to 500.
+type RemoteError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *RemoteError) Error() string {
+	return fmt.Sprintf("remote returned status %d: %s", e.StatusCode, e.Message)
 }
