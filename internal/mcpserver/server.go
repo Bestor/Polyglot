@@ -5,9 +5,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+
+	"val-analyzer/internal/tracing"
 )
 
 // maxLoggedPayload caps how much of a raw argument/response body ends up in
@@ -42,12 +48,32 @@ func NewServer(ops []Operation, client *Client) *mcp.Server {
 // result with IsError set, so the model can see it and self-correct - see
 // the CallToolResult.IsError doc in the SDK.
 func toolHandler(op Operation, client *Client) mcp.ToolHandler {
+	tracer := otel.Tracer("mcpserver")
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// req.Extra.Header carries the real inbound HTTP request's headers
+		// (populated by the go-sdk's Streamable HTTP server transport,
+		// even in this binary's Stateless mode) - including traceparent,
+		// if discordbot's otelhttp-wrapped MCP client sent one. Guarded
+		// against nil since internal test setups (e.g. this package's own
+		// TestServer_EndToEnd, which drives calls through
+		// mcp.NewInMemoryTransports) don't go through the HTTP transport
+		// at all, so Extra can be nil there.
+		header := http.Header{}
+		if req.Extra != nil && req.Extra.Header != nil {
+			header = req.Extra.Header
+		}
+		ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(header))
+		ctx, span := tracer.Start(ctx, op.Name)
+		defer span.End()
+		tracing.SetBaggageAttributes(ctx, span)
+		span.SetAttributes(attribute.String("tool.arguments", truncateForLog(string(req.Params.Arguments), maxLoggedPayload)))
+
 		args := map[string]any{}
 		if len(req.Params.Arguments) > 0 {
 			if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 				slog.Warn("mcpserver: invalid tool arguments", "tool", op.Name, "error", err,
 					"raw_args", truncateForLog(string(req.Params.Arguments), maxLoggedPayload))
+				span.RecordError(err)
 				return errorResult(fmt.Sprintf("invalid tool arguments: %v", err)), nil
 			}
 		}
@@ -60,6 +86,7 @@ func toolHandler(op Operation, client *Client) mcp.ToolHandler {
 		if err != nil {
 			slog.Error("mcpserver: tool call transport failure", "tool", op.Name, "error", err,
 				"duration_ms", time.Since(start).Milliseconds())
+			span.RecordError(err)
 			return nil, fmt.Errorf("calling polyglot %s %s: %w", op.Method, op.Path, err)
 		}
 
@@ -67,6 +94,10 @@ func toolHandler(op Operation, client *Client) mcp.ToolHandler {
 			"duration_ms", time.Since(start).Milliseconds())
 		slog.Debug("mcpserver: tool call response", "tool", op.Name,
 			"body", truncateForLog(string(body), maxLoggedPayload))
+		span.SetAttributes(
+			attribute.Int("http.response.status_code", status),
+			attribute.String("tool.response", truncateForLog(string(body), maxLoggedPayload)),
+		)
 
 		return &mcp.CallToolResult{
 			IsError: status >= 400,

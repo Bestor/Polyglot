@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,9 +14,11 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/bwmarrin/discordgo"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"val-analyzer/internal/discordbot"
 	"val-analyzer/internal/logging"
+	"val-analyzer/internal/tracing"
 )
 
 func main() {
@@ -30,6 +33,15 @@ func main() {
 
 	ctx := context.Background()
 
+	// Must run before discordbot.NewMCPSession(...) and anthropic.NewClient(...)
+	// below, both of which construct an otelhttp-wrapped http.Client - see
+	// internal/tracing's doc comment on why that ordering is load-bearing,
+	// not stylistic.
+	shutdownTracing, err := tracing.Init(ctx, "discordbot", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	if err != nil {
+		log.Fatalf("tracing: %v", err)
+	}
+
 	mcpSession, err := discordbot.NewMCPSession(ctx, mcpURL)
 	if err != nil {
 		log.Fatalf("connecting to mcpserver at %s: %v", mcpURL, err)
@@ -40,7 +52,13 @@ func main() {
 	}
 	tools := discordbot.ToolsToAnthropic(toolsResult.Tools)
 
-	ai := anthropic.NewClient(option.WithAPIKey(anthropicKey))
+	// The wrapped HTTP client layers real request/response timing under
+	// agent.go's own "anthropic.messages.create" span - not required for
+	// propagation (Claude's API isn't part of our trace), just detail.
+	ai := anthropic.NewClient(
+		option.WithAPIKey(anthropicKey),
+		option.WithHTTPClient(&http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}),
+	)
 
 	discordSession, err := discordgo.New("Bot " + discordToken)
 	if err != nil {
@@ -57,6 +75,8 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
+
+	shutdownTracing(context.Background())
 }
 
 func mustEnv(key string) string {

@@ -7,6 +7,10 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+
+	"val-analyzer/internal/tracing"
 )
 
 // maxToolIterations bounds the tool-use loop so a confused model can't
@@ -42,12 +46,15 @@ Your answer is posted directly into a Discord message, and Discord's markdown re
 // any of mcpserver's tools (via mcpSession) as many times as it needs, and
 // returns the final plain-language answer.
 func Answer(ctx context.Context, ai anthropic.Client, model string, mcpSession *mcp.ClientSession, tools []anthropic.ToolUnionParam, question string) (string, error) {
+	tracer := otel.Tracer("discordbot")
 	messages := []anthropic.MessageParam{
 		anthropic.NewUserMessage(anthropic.NewTextBlock(question)),
 	}
 
 	for i := 0; i < maxToolIterations; i++ {
-		resp, err := ai.Messages.New(ctx, anthropic.MessageNewParams{
+		callCtx, aiSpan := tracer.Start(ctx, "anthropic.messages.create")
+		tracing.SetBaggageAttributes(callCtx, aiSpan)
+		resp, err := ai.Messages.New(callCtx, anthropic.MessageNewParams{
 			Model:     model,
 			MaxTokens: answerMaxTokens,
 			System:    []anthropic.TextBlockParam{{Text: systemPrompt}},
@@ -55,8 +62,16 @@ func Answer(ctx context.Context, ai anthropic.Client, model string, mcpSession *
 			Messages:  messages,
 		})
 		if err != nil {
+			aiSpan.RecordError(err)
+			aiSpan.End()
 			return "", fmt.Errorf("calling claude: %w", err)
 		}
+		aiSpan.SetAttributes(
+			attribute.String("stop_reason", string(resp.StopReason)),
+			attribute.Int64("usage.input_tokens", resp.Usage.InputTokens),
+			attribute.Int64("usage.output_tokens", resp.Usage.OutputTokens),
+		)
+		aiSpan.End()
 		messages = append(messages, resp.ToParam())
 
 		if resp.StopReason != anthropic.StopReasonToolUse {
@@ -76,11 +91,23 @@ func Answer(ctx context.Context, ai anthropic.Client, model string, mcpSession *
 				continue
 			}
 
-			result, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: toolUse.Name, Arguments: args})
+			toolCtx, toolSpan := tracer.Start(ctx, "mcp.tool."+toolUse.Name)
+			tracing.SetBaggageAttributes(toolCtx, toolSpan)
+			// toolUse.Input is already the raw JSON args Claude generated for
+			// this call (e.g. {"sql":"..."} for query, {"function":...,
+			// "args":...} for warm) - exactly "what did the AI send to
+			// polyglot", attached as-is rather than re-marshaled from the
+			// already-decoded args map above.
+			toolSpan.SetAttributes(attribute.String("tool.arguments", string(toolUse.Input)))
+			result, err := mcpSession.CallTool(toolCtx, &mcp.CallToolParams{Name: toolUse.Name, Arguments: args})
 			if err != nil {
+				toolSpan.RecordError(err)
+				toolSpan.End()
 				toolResults = append(toolResults, anthropic.NewToolResultBlock(toolUse.ID, fmt.Sprintf("tool call failed: %v", err), true))
 				continue
 			}
+			toolSpan.SetAttributes(attribute.Bool("tool.is_error", result.IsError))
+			toolSpan.End()
 			toolResults = append(toolResults, anthropic.NewToolResultBlock(toolUse.ID, mcpResultText(result), result.IsError))
 		}
 		messages = append(messages, anthropic.NewUserMessage(toolResults...))

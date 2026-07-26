@@ -16,6 +16,8 @@ import (
 	"net/url"
 	"strings"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"val-analyzer/internal/ai"
 	"val-analyzer/internal/dataprovider"
 	"val-analyzer/internal/jobstore"
@@ -46,7 +48,14 @@ func (Provider) New(ctx context.Context, config map[string]any) (dataprovider.In
 		return nil, fmt.Errorf("http_sql: base_url and auth_token are required")
 	}
 
-	inst := &instance{baseURL: strings.TrimRight(baseURL, "/"), token: token, client: &http.Client{}}
+	// otelhttp.NewTransport both creates a per-call child span and injects
+	// the traceparent header - both come for free from the context already
+	// carrying an active span by the time Query/Catalog's ctx reaches here
+	// (see internal/tracing's own doc comment for the one thing that must
+	// stay true for this to work: internal/tracing.Init must run before
+	// this Provider is ever used).
+	inst := &instance{baseURL: strings.TrimRight(baseURL, "/"), token: token,
+		client: &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)}}
 	// A real round trip at onboarding time, same rationale as sqlite's
 	// PingContext - a bad base_url/auth_token fails onboarding, not the
 	// first query.

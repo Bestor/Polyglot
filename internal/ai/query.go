@@ -10,6 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -68,9 +71,21 @@ func RunReadOnlyQuery(ctx context.Context, db *sql.DB, sqlText string) (QueryRes
 	start := time.Now()
 	slog.Debug("ai: sql query", "sql", trimmed)
 
+	// Annotates whatever span is already active on ctx (e.g. valorantapi's/
+	// polyglot's own tracing.Middleware-created request span) rather than
+	// starting a new one - this is the one place all three callers
+	// (NewReadOnlyExecutor for valorantapi/polyglot's own db,
+	// internal/providers/sqlite for an onboarded file) funnel through, so
+	// enriching here covers all of them without per-caller wiring. A
+	// context with no active span (e.g. a direct unit-test call) gets
+	// otel's no-op span, safe to call unconditionally.
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(attribute.String("db.statement", trimmed))
+
 	upper := strings.ToUpper(trimmed)
 	if !strings.HasPrefix(upper, "SELECT") && !strings.HasPrefix(upper, "WITH") {
 		slog.Warn("ai: sql query rejected", "sql", trimmed, "error", ErrNotReadOnly)
+		span.RecordError(ErrNotReadOnly)
 		return QueryResult{}, ErrNotReadOnly
 	}
 
@@ -80,6 +95,7 @@ func RunReadOnlyQuery(ctx context.Context, db *sql.DB, sqlText string) (QueryRes
 	rows, err := db.QueryContext(qCtx, trimmed)
 	if err != nil {
 		slog.Error("ai: sql query failed", "sql", trimmed, "error", err, "duration_ms", time.Since(start).Milliseconds())
+		span.RecordError(err)
 		return QueryResult{}, err
 	}
 	defer rows.Close()
@@ -142,6 +158,10 @@ func RunReadOnlyQuery(ctx context.Context, db *sql.DB, sqlText string) (QueryRes
 
 	slog.Info("ai: sql query complete", "rows", len(result.Rows), "truncated", result.Truncated, "duration_ms", time.Since(start).Milliseconds())
 	slog.Debug("ai: sql query complete", "sql", trimmed)
+	span.SetAttributes(
+		attribute.Int("db.rows_returned", len(result.Rows)),
+		attribute.Bool("db.truncated", result.Truncated),
+	)
 
 	return result, nil
 }

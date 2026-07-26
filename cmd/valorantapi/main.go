@@ -11,6 +11,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 
@@ -23,6 +24,7 @@ import (
 	"val-analyzer/internal/jobstore"
 	"val-analyzer/internal/logging"
 	"val-analyzer/internal/ratelimit"
+	"val-analyzer/internal/tracing"
 	"val-analyzer/internal/valorant"
 	"val-analyzer/internal/valorant/data_sources/henrik"
 	"val-analyzer/internal/valorant/ingest"
@@ -37,8 +39,21 @@ func main() {
 	}
 	logging.Init(cfg.Debug)
 
+	// Must run before anything below constructs an otelhttp-wrapped
+	// http.Client - see internal/tracing's doc comment on why that
+	// ordering is load-bearing, not stylistic.
+	shutdownTracing, err := tracing.Init(context.Background(), "valorantapi", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	if err != nil {
+		log.Fatalf("tracing: %v", err)
+	}
+
 	app := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDataDir: cfg.PBDataDir,
+	})
+
+	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+		shutdownTracing(context.Background())
+		return e.Next()
 	})
 
 	migratecmd.MustRegister(app, app.RootCmd, migratecmd.Config{
@@ -73,6 +88,7 @@ func main() {
 
 		group := se.Router.Group("")
 		group.BindFunc(httpauth.RequireToken(cfg.APIAuthToken))
+		group.BindFunc(tracing.Middleware("valorantapi"))
 		group.GET("/query", handleQuery(query))
 		group.GET("/schema", handleSchema(se.App))
 		group.GET("/functions", handleFunctions(functions))

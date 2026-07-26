@@ -6,21 +6,34 @@
 package main
 
 import (
+	"context"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"val-analyzer/internal/logging"
 	"val-analyzer/internal/mcpserver"
+	"val-analyzer/internal/tracing"
 )
 
 func main() {
 	debug := getEnvBool("DEBUG", false)
 	logging.Init(debug)
+
+	// Must run before mcpserver.NewClient(...) below, which constructs an
+	// otelhttp-wrapped http.Client - see internal/tracing's doc comment on
+	// why that ordering is load-bearing, not stylistic.
+	shutdownTracing, err := tracing.Init(context.Background(), "mcpserver", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	if err != nil {
+		log.Fatalf("tracing: %v", err)
+	}
 
 	specPath := getEnvDefault("OPENAPI_SPEC_PATH", "openapi/polyglot.yaml")
 	port := getEnvDefault("PORT", "8092")
@@ -55,9 +68,29 @@ func main() {
 	mux.Handle("/mcp", handler)
 
 	slog.Info("mcpserver: starting", "tools", len(ops), "spec", specPath, "polyglot_url", polyglotURL, "port", port, "debug", debug)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
-		log.Fatal(err)
+
+	// A real *http.Server (not a bare http.ListenAndServe call) plus
+	// signal handling, mirroring cmd/discordbot/main.go's existing
+	// pattern - needed regardless of tracing (this binary previously had
+	// no graceful shutdown at all), but specifically required here so
+	// shutdownTracing has a real place to flush batched spans before exit.
+	srv := &http.Server{Addr: ":" + port, Handler: mux}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}()
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("mcpserver: error during shutdown", "error", err)
 	}
+	shutdownTracing(shutdownCtx)
 }
 
 func getEnvDefault(key, def string) string {

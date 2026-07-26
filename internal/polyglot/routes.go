@@ -23,6 +23,7 @@ import (
 	"val-analyzer/internal/ai"
 	"val-analyzer/internal/httpauth"
 	"val-analyzer/internal/jobstore"
+	"val-analyzer/internal/tracing"
 )
 
 // RegisterRoutes wires polyglot's HTTP API onto PocketBase's own router.
@@ -31,6 +32,7 @@ import (
 func RegisterRoutes(se *core.ServeEvent, reg *Registry, jobs *jobstore.Store, query ai.QueryFunc, authToken string) error {
 	group := se.Router.Group("")
 	group.BindFunc(httpauth.RequireToken(authToken))
+	group.BindFunc(tracing.Middleware("polyglot"))
 	group.GET("/query", handleQuery(query, reg))
 	group.GET("/metadata", handleMetadata())
 	group.GET("/datasources", handleListDatasources(reg))

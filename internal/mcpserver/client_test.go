@@ -7,6 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func TestClient_Call_QueryParams(t *testing.T) {
@@ -75,5 +79,40 @@ func TestClient_Call_JSONBody(t *testing.T) {
 	}
 	if len(body) == 0 {
 		t.Error("expected a non-empty response body")
+	}
+}
+
+// TestClient_Call_PropagatesTraceparent proves the otelhttp-wrapped client
+// actually injects a traceparent header, given an active span on the
+// calling context - this is the mcpserver -> polyglot hop specifically.
+func TestClient_Call_PropagatesTraceparent(t *testing.T) {
+	prevTP := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+	otel.SetTracerProvider(sdktrace.NewTracerProvider())
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	var gotTraceparent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTraceparent = r.Header.Get("traceparent")
+		w.Write([]byte(`{"rows":[],"row_count":0,"truncated":false}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, "secret-token")
+	op := Operation{Method: "GET", Path: "/query", Params: []Param{{Name: "sql"}}}
+
+	ctx, span := otel.Tracer("test").Start(context.Background(), "test-span")
+	defer span.End()
+
+	if _, _, err := client.Call(ctx, op, map[string]any{"sql": "SELECT 1"}); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	if gotTraceparent == "" {
+		t.Error("expected the backend to receive a traceparent header, got none")
 	}
 }

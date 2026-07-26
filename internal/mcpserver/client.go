@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // Client calls the polyglot Data API over HTTP, using the same static
@@ -23,7 +25,13 @@ func NewClient(baseURL, authToken string) *Client {
 	return &Client{
 		baseURL:   strings.TrimSuffix(baseURL, "/"),
 		authToken: authToken,
-		http:      &http.Client{},
+		// otelhttp.NewTransport creates a span for this outbound call and
+		// injects the traceparent header, for free, once the ctx Call
+		// receives already carries an active span (see toolHandler's own
+		// span, which wraps every call to this Client) - see
+		// internal/tracing's doc comment on why Init must run before this
+		// Client is ever constructed.
+		http: &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)},
 	}
 }
 

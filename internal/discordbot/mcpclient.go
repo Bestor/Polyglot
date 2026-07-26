@@ -6,8 +6,10 @@ package discordbot
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // NewMCPSession connects to a running mcpserver instance over Streamable
@@ -18,6 +20,13 @@ import (
 // expected usage, not a workaround.
 func NewMCPSession(ctx context.Context, mcpURL string) (*mcp.ClientSession, error) {
 	client := mcp.NewClient(&mcp.Implementation{Name: "val-analyzer-discordbot", Version: "0.1.0"}, nil)
-	transport := &mcp.StreamableClientTransport{Endpoint: mcpURL}
+	// The wrapped HTTPClient is what makes each CallTool's outbound POST
+	// carry a traceparent header (and get its own span) - see
+	// internal/tracing's doc comment on why Init must run before this
+	// session is ever created.
+	transport := &mcp.StreamableClientTransport{
+		Endpoint:   mcpURL,
+		HTTPClient: &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport)},
+	}
 	return client.Connect(ctx, transport, nil)
 }

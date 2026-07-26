@@ -8,6 +8,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
 	"val-analyzer/internal/ai"
 	"val-analyzer/internal/dataprovider"
 	"val-analyzer/internal/jobstore"
@@ -244,5 +248,45 @@ func TestInstance_Query_NonOKStatusReturnsRemoteError(t *testing.T) {
 	}
 	if remoteErr.Message != "sql logic error" {
 		t.Errorf("Message = %q, want the remote's own decoded message", remoteErr.Message)
+	}
+}
+
+// TestInstance_Query_PropagatesTraceparent proves the otelhttp-wrapped
+// client actually injects a traceparent header, given an active span on
+// the calling context - direct proof of propagation, no real collector
+// needed.
+func TestInstance_Query_PropagatesTraceparent(t *testing.T) {
+	prevTP := otel.GetTracerProvider()
+	prevProp := otel.GetTextMapPropagator()
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevTP)
+		otel.SetTextMapPropagator(prevProp)
+	})
+	otel.SetTracerProvider(sdktrace.NewTracerProvider())
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	var gotTraceparent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotTraceparent = r.Header.Get("traceparent")
+		json.NewEncoder(w).Encode(ai.QueryResult{})
+	}))
+	defer srv.Close()
+
+	p := Provider{}
+	inst, err := p.New(context.Background(), map[string]any{"base_url": srv.URL, "auth_token": "x"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer inst.Close()
+
+	ctx, span := otel.Tracer("test").Start(context.Background(), "test-span")
+	defer span.End()
+
+	if _, err := inst.Query(ctx, "SELECT 1"); err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+
+	if gotTraceparent == "" {
+		t.Error("expected the remote to receive a traceparent header, got none")
 	}
 }

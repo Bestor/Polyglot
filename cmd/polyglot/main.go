@@ -31,6 +31,7 @@ import (
 	"val-analyzer/internal/polyglot"
 	"val-analyzer/internal/providers/httpsql"
 	"val-analyzer/internal/providers/sqlite"
+	"val-analyzer/internal/tracing"
 	"val-analyzer/internal/vault"
 )
 
@@ -41,8 +42,22 @@ func main() {
 	}
 	logging.Init(cfg.Debug)
 
+	// Must run before anything below constructs an otelhttp-wrapped
+	// http.Client (e.g. an httpsql.Provider's Instance, onboarded inside
+	// the OnServe hook further down) - see internal/tracing's doc comment
+	// on why that ordering is load-bearing, not stylistic.
+	shutdownTracing, err := tracing.Init(context.Background(), "polyglot", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	if err != nil {
+		log.Fatalf("tracing: %v", err)
+	}
+
 	app := pocketbase.NewWithConfig(pocketbase.Config{
 		DefaultDataDir: cfg.PBDataDir,
+	})
+
+	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+		shutdownTracing(context.Background())
+		return e.Next()
 	})
 
 	migratecmd.MustRegister(app, app.RootCmd, migratecmd.Config{

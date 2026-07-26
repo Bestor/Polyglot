@@ -3,12 +3,16 @@ package discordbot
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/bwmarrin/discordgo"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
 )
 
 const askCommandName = "ask"
@@ -26,6 +30,13 @@ const discordMaxMessageLength = 2000
 // Discord's interaction token stays valid for 15 minutes after a deferred
 // response, so that's the real ceiling, not anything shorter.
 const answerTimeout = 10 * time.Minute
+
+// maxBaggageQuestionBytes bounds the copy of the question forwarded via W3C
+// baggage (propagated as a literal HTTP header value on every downstream
+// hop) - independent of the full, untruncated text already attached
+// directly to this span's own "question" attribute below, which never
+// leaves this process's memory.
+const maxBaggageQuestionBytes = 2048
 
 // RegisterAndServe opens the Discord session, registers the /ask slash
 // command, and wires up its handler. guildID empty registers the command
@@ -50,8 +61,19 @@ func RegisterAndServe(session *discordgo.Session, guildID string, ai anthropic.C
 		ctx, cancel := context.WithTimeout(context.Background(), answerTimeout)
 		defer cancel()
 
+		// The root span for the whole /ask flow - a genuinely fresh trace
+		// root, since Discord gateway events carry no incoming trace
+		// context of their own.
+		ctx, span := otel.Tracer("discordbot").Start(ctx, "discordbot.ask")
+		defer span.End()
+		span.SetAttributes(attribute.String("question", question))
+		ctx = withQuestionBaggage(ctx, question)
+
 		slog.Info("discordbot: ask", "question", question)
 		answer, err := Answer(ctx, ai, model, mcpSession, tools, question)
+		if err != nil {
+			span.RecordError(err)
+		}
 		content, attachment := finalizeAnswer(question, answer, err)
 
 		edit := &discordgo.WebhookEdit{Content: &content}
@@ -81,6 +103,34 @@ func RegisterAndServe(session *discordgo.Session, guildID string, ai anthropic.C
 		},
 	})
 	return err
+}
+
+// withQuestionBaggage attaches question to ctx as W3C baggage (bounded by
+// maxBaggageQuestionBytes) so every downstream hop that already extracts
+// baggage (mcpserver's toolHandler, tracing.Middleware for polyglot/
+// valorantapi) can tag its own span with the question that triggered it,
+// without this package needing to know or care what those hops do with it.
+// url.PathEscape, not url.QueryEscape: baggage.NewMember decodes its value
+// argument with url.PathUnescape, which - unlike url.QueryUnescape - does
+// not turn "+" back into a space, so QueryEscape's "+"-for-space encoding
+// would silently corrupt every space in the round trip.
+func withQuestionBaggage(ctx context.Context, question string) context.Context {
+	truncated := question
+	if len(truncated) > maxBaggageQuestionBytes {
+		truncated = truncated[:maxBaggageQuestionBytes]
+	}
+
+	member, err := baggage.NewMember("question", url.PathEscape(truncated))
+	if err != nil {
+		slog.Warn("discordbot: failed to build question baggage member", "error", err)
+		return ctx
+	}
+	bag, err := baggage.New(member)
+	if err != nil {
+		slog.Warn("discordbot: failed to build question baggage", "error", err)
+		return ctx
+	}
+	return baggage.ContextWithBaggage(ctx, bag)
 }
 
 // finalizeAnswer turns Answer's result into content (and, sometimes, a

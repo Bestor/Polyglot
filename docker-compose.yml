@@ -30,8 +30,12 @@ services:
       # service silently ignores that and runs at debug level (full SQL
       # text, full tool-call args) in production regardless.
       DEBUG: ${DEBUG:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     ports:
       - "8093:8093"
+    depends_on:
+      jaeger:
+        condition: service_started
     volumes:
       # Unset (local dev): resolves to the named volume below, unchanged
       # behavior. Set to a host path (production, via cloud-init-written
@@ -91,6 +95,19 @@ services:
     # and operations" section for the one-time init/policy setup this
     # still requires by hand.
 
+  jaeger:
+    image: jaegertracing/jaeger:2.20.0 # pinned, not :latest
+    container_name: val-analyzer-jaeger
+    ports:
+      - "16686:16686" # UI only - OTLP (4317 gRPC / 4318 HTTP) is reachable
+      # internally by other services as http://jaeger:4318, matching
+      # openbao's own internal-only precedent; nothing outside this Compose
+      # network needs to reach OTLP directly.
+    # No volumes: - deliberately ephemeral in-memory storage (the all-in-one
+    # image's own zero-config default, no env var needed) - traces don't
+    # need to survive a restart for this use case. See internal/tracing for
+    # how each service's OTEL_EXPORTER_OTLP_ENDPOINT points here.
+
   polyglot:
     build: .
     image: ghcr.io/bestor/polyglot:latest
@@ -108,10 +125,13 @@ services:
       # service silently ignores that and runs at debug level (full SQL
       # text, full tool-call args) in production regardless.
       DEBUG: ${DEBUG:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     ports:
       - "8091:8091"
     depends_on:
       openbao:
+        condition: service_started
+      jaeger:
         condition: service_started
       # polyglot's own boot hook calls autoOnboardValorantAPIFromEnv,
       # which does a real round trip to valorantapi (a live Catalog()
@@ -143,10 +163,14 @@ services:
       # service silently ignores that and runs at debug level (full SQL
       # text, full tool-call args) in production regardless.
       DEBUG: ${DEBUG:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     ports:
       - "8092:8092"
     depends_on:
-      - polyglot
+      polyglot:
+        condition: service_started
+      jaeger:
+        condition: service_started
 
   # Only starts when the "discordbot" profile is active - set
   # COMPOSE_PROFILES=discordbot in .env once DISCORD_BOT_TOKEN and
@@ -167,8 +191,12 @@ services:
       # service silently ignores that and runs at debug level (full SQL
       # text, full tool-call args) in production regardless.
       DEBUG: ${DEBUG:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     depends_on:
-      - mcpserver
+      mcpserver:
+        condition: service_started
+      jaeger:
+        condition: service_started
 
   # Not profile-gated (unlike discordbot) - safe to run by default since
   # cmd/cachewarmer/players.txt ships empty, a no-op until a player is
