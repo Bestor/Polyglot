@@ -87,19 +87,31 @@
 		left: 0;
 		bottom: 0;
 		width: min(420px, 100vw);
-		background: var(--bg, #fff);
-		border-right: 1px solid var(--border, #ddd);
+		min-width: 280px;
+		max-width: 90vw;
+		background: var(--panel-bg, #fffdf8);
+		border-right: 1px solid var(--border, #d8c8a0);
 		display: flex;
 		flex-direction: column;
 		z-index: 100;
-		box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
+		box-shadow: var(--shadow-lg, 0 8px 24px rgba(95, 154, 111, 0.22));
+		/* Automatically resizable - the native browser drag handle (bottom-
+		right corner) lets the panel be widened/narrowed with no extra JS.
+		overflow: auto is required for `resize` to take effect at all. */
+		resize: horizontal;
+		overflow: auto;
 	}
 	.chat-header {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
 		padding: 0.75rem 1rem;
-		border-bottom: 1px solid var(--border, #ddd);
+		background: linear-gradient(135deg, var(--accent-bg, #dcefdd), var(--panel-bg, #fffdf8));
+		border-bottom: 1px solid var(--border, #d8c8a0);
+	}
+	.chat-header strong {
+		color: var(--accent, #5f9a6f);
+		letter-spacing: 0.02em;
 	}
 	.chat-close {
 		background: none;
@@ -107,6 +119,17 @@
 		font-size: 1.25rem;
 		cursor: pointer;
 		line-height: 1;
+		color: var(--muted-fg, #8a7a54);
+		border-radius: 999px;
+		width: 1.75rem;
+		height: 1.75rem;
+		transition:
+			background 0.15s ease,
+			color 0.15s ease;
+	}
+	.chat-close:hover {
+		background: var(--muted-bg, #f1e6cd);
+		color: #3f3826;
 	}
 	.chat-history {
 		flex: 1;
@@ -118,16 +141,19 @@
 	}
 	.chat-turn {
 		padding: 0.5rem 0.75rem;
-		border-radius: 0.5rem;
+		border-radius: 0.75rem;
 		max-width: 90%;
+		box-shadow: var(--shadow, 0 2px 10px rgba(95, 154, 111, 0.18));
 	}
 	.chat-turn-user {
 		align-self: flex-end;
-		background: var(--accent-bg, #dbeafe);
+		background: var(--accent-bg, #dcefdd);
+		border: 1px solid color-mix(in srgb, var(--accent, #5f9a6f) 25%, transparent);
 	}
 	.chat-turn-assistant {
 		align-self: flex-start;
-		background: var(--muted-bg, #f3f4f6);
+		background: var(--muted-bg, #f1e6cd);
+		border: 1px solid var(--border, #d8c8a0);
 	}
 	.chat-turn-assistant :global(table) {
 		border-collapse: collapse;
@@ -135,26 +161,64 @@
 	}
 	.chat-turn-assistant :global(th),
 	.chat-turn-assistant :global(td) {
-		border: 1px solid var(--border, #ddd);
+		border: 1px solid var(--border, #d8c8a0);
 		padding: 0.25rem 0.5rem;
 		text-align: left;
 	}
+	.chat-turn-assistant :global(th) {
+		background: var(--accent-bg, #dcefdd);
+	}
 	.chat-pending {
-		opacity: 0.6;
+		opacity: 0.7;
 		font-style: italic;
 	}
 	.chat-error {
-		color: #b91c1c;
+		color: var(--error-fg, #a1502b);
+		background: var(--error-bg, #f7e3d6);
+		border-radius: 0.5rem;
+		padding: 0.5rem 0.75rem;
 		font-size: 0.9rem;
 	}
 	form {
 		display: flex;
 		gap: 0.5rem;
 		padding: 0.75rem 1rem;
-		border-top: 1px solid var(--border, #ddd);
+		background: var(--panel-bg, #fffdf8);
+		border-top: 1px solid var(--border, #d8c8a0);
 	}
 	input {
 		flex: 1;
-		padding: 0.5rem;
+		padding: 0.5rem 0.75rem;
+		border: 1px solid var(--border, #d8c8a0);
+		border-radius: 0.5rem;
+		background: var(--bg, #faf5e9);
+		transition:
+			border-color 0.15s ease,
+			box-shadow 0.15s ease;
+	}
+	input:focus {
+		outline: none;
+		border-color: var(--accent, #5f9a6f);
+		box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent, #5f9a6f) 18%, transparent);
+	}
+	button[type='submit'] {
+		padding: 0.5rem 1rem;
+		border: none;
+		border-radius: 0.5rem;
+		background: var(--accent, #5f9a6f);
+		color: #fff;
+		font-weight: 600;
+		cursor: pointer;
+		transition:
+			background 0.15s ease,
+			transform 0.15s ease;
+	}
+	button[type='submit']:hover:not(:disabled) {
+		background: var(--accent-hover, #4f8a5f);
+		transform: translateY(-1px);
+	}
+	button[type='submit']:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 </style>

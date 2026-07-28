@@ -1,0 +1,30 @@
+/* Light green + tan theme. Components reference these via var(--x, fallback)
+   - defining them here is what actually turns the theme on; the fallbacks
+   in each component's <style> block exist only so nothing breaks if this
+   file is ever removed. */
+:root {
+	--bg: #faf5e9; /* warm tan page background */
+	--panel-bg: #fffdf8; /* slightly lighter than --bg, for cards/panels to stand out against it */
+	--border: #d8c8a0; /* warm tan border */
+	--accent: #5f9a6f; /* light green, primary/interactive */
+	--accent-hover: #4f8a5f;
+	--accent-bg: #dcefdd; /* pale green, e.g. user chat bubbles */
+	--muted-bg: #f1e6cd; /* pale tan, e.g. assistant chat bubbles / muted surfaces */
+	--muted-fg: #8a7a54; /* muted tan-brown text */
+	--success-bg: #dbeedb;
+	--success-fg: #2f6b3f;
+	--error-bg: #f7e3d6;
+	--error-fg: #a1502b;
+	--shadow: 0 2px 10px rgba(95, 154, 111, 0.18);
+	--shadow-lg: 0 8px 24px rgba(95, 154, 111, 0.22);
+}
+
+body {
+	background: var(--bg);
+	color: #3f3826;
+	font-family:
+		system-ui,
+		-apple-system,
+		'Segoe UI',
+		sans-serif;
+}
