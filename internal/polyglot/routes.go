@@ -12,7 +12,9 @@
 // cmd/polyglot/main.go). Async jobs (polyglot's own catalog-reconcile
 // jobs, or a proxied POST /warm job) are tracked via internal/jobstore (or,
 // for a proxied job, the remote datasource's own equivalent) and polled
-// through GET /jobs?id=[&datasource=].
+// through GET /jobs?id=[&datasource=]. GET /queries and GET /queries/detail
+// serve a recent-queries view read live from Jaeger's own trace storage
+// (see jaeger.go) rather than any persisted collection of polyglot's own.
 package polyglot
 
 import (
@@ -29,7 +31,7 @@ import (
 // RegisterRoutes wires polyglot's HTTP API onto PocketBase's own router.
 // It must be called from within an app.OnServe() handler (see
 // cmd/polyglot/main.go), after reg has been rehydrated/auto-onboarded.
-func RegisterRoutes(se *core.ServeEvent, reg *Registry, jobs *jobstore.Store, query ai.QueryFunc, authToken string) error {
+func RegisterRoutes(se *core.ServeEvent, reg *Registry, jobs *jobstore.Store, query ai.QueryFunc, authToken string, jc *JaegerClient) error {
 	group := se.Router.Group("")
 	group.BindFunc(httpauth.RequireToken(authToken))
 	group.BindFunc(tracing.Middleware("polyglot"))
@@ -44,6 +46,8 @@ func RegisterRoutes(se *core.ServeEvent, reg *Registry, jobs *jobstore.Store, qu
 	group.POST("/warm", handleWarm(reg))
 	group.POST("/functions/annotate", handleAnnotateFunction())
 	group.GET("/jobs", handleJobStatus(jobs, reg))
+	group.GET("/queries", handleListQueries(jc))
+	group.GET("/queries/detail", handleQueryDetail(jc))
 
 	return nil
 }

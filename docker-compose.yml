@@ -126,6 +126,11 @@ services:
       # text, full tool-call args) in production regardless.
       DEBUG: ${DEBUG:-true}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+      # Powers GET /queries/GET /queries/detail (the webui's recent-queries
+      # page) - the same port Jaeger's own UI is served on, since its
+      # all-in-one image serves both from one listener. Internal-only,
+      # matching every other jaeger:PORT reference in this file.
+      JAEGER_QUERY_URL: http://jaeger:16686
     ports:
       - "8091:8091"
     depends_on:
@@ -170,6 +175,38 @@ services:
       polyglot:
         condition: service_started
       jaeger:
+        condition: service_started
+
+  # Not a Go binary - a separate SvelteKit app (own toolchain, own
+  # Dockerfile at webui/Dockerfile), so it can't share the ghcr.io/bestor/
+  # polyglot image/entrypoint-override trick every other service above
+  # uses. Its own server-side layer holds ANTHROPIC_API_KEY and acts as an
+  # MCP client to mcpserver directly (see webui/src/lib/server/agent.ts) -
+  # not proxied through polyglot, a deliberate departure from "the UI only
+  # talks to polyglot" (see the plan doc: routing AI reasoning through
+  # polyglot would mean giving polyglot responsibilities it deliberately
+  # doesn't have - see this file's own polyglot service and CLAUDE.md).
+  # Reuses API_AUTH_TOKEN/ANTHROPIC_API_KEY - no new secrets needed.
+  # Published on 3000 but not firewall-reachable (see terraform/droplet.tf)
+  # - SSH-tunnel-only, the same access pattern as jaeger's 16686 below.
+  webui:
+    build: ./webui
+    image: ghcr.io/bestor/val-analyzer-webui:latest
+    container_name: val-analyzer-webui
+    env_file: .env
+    environment:
+      PORT: 3000
+      POLYGLOT_URL: http://polyglot:8091
+      POLYGLOT_AUTH_TOKEN: ${API_AUTH_TOKEN}
+      MCP_URL: http://mcpserver:8092/mcp
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL}
+    ports:
+      - "3000:3000"
+    depends_on:
+      polyglot:
+        condition: service_started
+      mcpserver:
         condition: service_started
 
   # Only starts when the "discordbot" profile is active - set

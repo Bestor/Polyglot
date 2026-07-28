@@ -56,8 +56,8 @@ func TestServer_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if len(tools.Tools) != 11 {
-		t.Fatalf("expected 11 tools, got %d", len(tools.Tools))
+	if len(tools.Tools) != 13 {
+		t.Fatalf("expected 13 tools, got %d", len(tools.Tools))
 	}
 
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{

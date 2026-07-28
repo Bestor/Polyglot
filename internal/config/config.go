@@ -28,6 +28,13 @@ type Config struct {
 	// text, request/response payloads, and tool-call arguments. Off by
 	// default since those can be large and noisy for routine operation.
 	Debug bool
+	// JaegerQueryURL points GET /queries/GET /queries/detail at Jaeger's own
+	// trace-query HTTP API (e.g. http://jaeger:16686 - the same port Jaeger's
+	// UI itself is served on). Optional, like OTEL_EXPORTER_OTLP_ENDPOINT:
+	// unset disables the recent-queries feature (empty list/404s) rather
+	// than failing boot, since it's a read-only convenience view, not a
+	// load-bearing dependency.
+	JaegerQueryURL string
 }
 
 func Load() (Config, error) {
@@ -41,6 +48,7 @@ func Load() (Config, error) {
 		VaultToken:        os.Getenv("VAULT_TOKEN"),
 		VaultUnsealKey:    os.Getenv("VAULT_UNSEAL_KEY"),
 		Debug:             getEnvBool("DEBUG", false),
+		JaegerQueryURL:    os.Getenv("JAEGER_QUERY_URL"),
 	}
 
 	if cfg.APIAuthToken == "" {

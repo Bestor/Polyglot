@@ -608,6 +608,75 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /queries:
+    get:
+      operationId: listQueries
+      summary: List recently run SQL queries
+      description: |
+        Returns the most recent SQL queries actually run through GET /query (across every caller -
+        an MCP client, a direct curl call, anything), most recent first. Read live from Jaeger's own
+        trace storage rather than a persisted collection of polyglot's own - so this list is empty if
+        tracing isn't configured, and resets whenever Jaeger itself restarts (its storage is
+        deliberately ephemeral/in-memory, by this project's own design).
+
+        One row per actual query call, not per conversation - a single multi-turn AI conversation can
+        run several queries, and each one gets its own row here.
+      responses:
+        "200":
+          description: The most recent queries, most recent first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListQueriesResponse"
+              example:
+                queries:
+                  - id: "5326331314ad6a7fd748441a2e63290e:fcdf65ab6774b02a"
+                    sql: "SELECT name, tag FROM players WHERE tag = 'NA1' LIMIT 10"
+                    question: "how good is Sova this act?"
+                    status: success
+                    duration_ms: 12
+                    timestamp: "2026-07-12T18:04:05Z"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /queries/detail:
+    get:
+      operationId: getQueryDetail
+      summary: Get the full detail of one previously run query
+      description: |
+        Returns everything GET /queries' summary row has, plus the query's full response body and
+        every span in the same trace (one entry per hop it passed through - e.g. mcpserver, polyglot,
+        valorantapi - each with its own timing and tags) for full cross-service context.
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: A query id from GET /queries' `id` field (opaque, "<traceID>:<spanID>" shaped - do not construct one by hand).
+          example: "5326331314ad6a7fd748441a2e63290e:fcdf65ab6774b02a"
+      responses:
+        "200":
+          description: The query exists; full detail follows.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryDetail"
+        "400":
+          description: Missing or malformed id query parameter.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: No query with that id (unknown id, or Jaeger's own storage has already evicted/rotated it out).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -694,6 +763,85 @@ components:
         updated_at:
           type: string
           format: date-time
+
+    QuerySummary:
+      type: object
+      required: [id, sql, question, status, duration_ms, timestamp]
+      properties:
+        id:
+          type: string
+          description: Opaque id, "<traceID>:<spanID>" shaped - pass to GET /queries/detail?id= verbatim.
+        sql:
+          type: string
+          description: The SQL text that was run.
+        question:
+          type: [string, "null"]
+          description: The free-text question that led to this query, if the caller was a client that propagates one (e.g. the Discord bot's /ask). Null for calls that didn't originate that way - this is enrichment, not always available.
+        status:
+          type: string
+          enum: [success, error]
+        duration_ms:
+          type: integer
+          minimum: 0
+        timestamp:
+          type: string
+          format: date-time
+          description: When the query ran.
+
+    SpanDetail:
+      type: object
+      required: [service, operation_name, duration_ms, tags]
+      properties:
+        service:
+          type: string
+          description: Which service this span belongs to (e.g. mcpserver, polyglot, valorantapi).
+        operation_name:
+          type: string
+        duration_ms:
+          type: integer
+          minimum: 0
+        tags:
+          type: object
+          description: This span's own tags/attributes, verbatim.
+          additionalProperties:
+            type: string
+
+    QueryDetail:
+      type: object
+      required: [id, sql, question, status, duration_ms, timestamp, response, spans]
+      properties:
+        id:
+          type: string
+        sql:
+          type: string
+        question:
+          type: [string, "null"]
+        status:
+          type: string
+          enum: [success, error]
+        duration_ms:
+          type: integer
+          minimum: 0
+        timestamp:
+          type: string
+          format: date-time
+        response:
+          type: string
+          description: The query's full raw response body.
+        spans:
+          type: array
+          description: Every span in this query's trace, one per hop it passed through.
+          items:
+            $ref: "#/components/schemas/SpanDetail"
+
+    ListQueriesResponse:
+      type: object
+      required: [queries]
+      properties:
+        queries:
+          type: array
+          items:
+            $ref: "#/components/schemas/QuerySummary"
 
     ColumnDescription:
       type: object

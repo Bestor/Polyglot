@@ -120,7 +120,9 @@ func main() {
 			return err
 		}
 
-		if err := polyglot.RegisterRoutes(se, reg, jobs, query, cfg.APIAuthToken); err != nil {
+		jc := polyglot.NewJaegerClient(cfg.JaegerQueryURL)
+
+		if err := polyglot.RegisterRoutes(se, reg, jobs, query, cfg.APIAuthToken, jc); err != nil {
 			return err
 		}
 

@@ -24,6 +24,7 @@ concurrency:
 
 env:
   GHCR_IMAGE: ghcr.io/bestor/polyglot
+  GHCR_WEBUI_IMAGE: ghcr.io/bestor/val-analyzer-webui
 
 jobs:
   build:
@@ -42,6 +43,21 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      # CI sanity check only (catches broken TypeScript at merge time,
+      # matching the Go build/vet/test gate above) - the actual artifact
+      # ships via the docker/build-push-action step below, which redoes
+      # this build from scratch inside webui/Dockerfile's own build stage.
+      - run: npm ci
+        working-directory: webui
+      - run: npm run build
+        working-directory: webui
+
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -55,6 +71,14 @@ jobs:
           tags: |
             ${{ env.GHCR_IMAGE }}:latest
             ${{ env.GHCR_IMAGE }}:sha-${{ github.sha }}
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: ./webui
+          push: true
+          tags: |
+            ${{ env.GHCR_WEBUI_IMAGE }}:latest
+            ${{ env.GHCR_WEBUI_IMAGE }}:sha-${{ github.sha }}
 
   provision:
     needs: build
