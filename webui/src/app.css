@@ -17,6 +17,25 @@
 	--error-fg: #a1502b;
 	--shadow: 0 2px 10px rgba(95, 154, 111, 0.18);
 	--shadow-lg: 0 8px 24px rgba(95, 154, 111, 0.22);
+	/* Shared by Sidebar.svelte (its own width), +layout.svelte (main content's
+	   left offset), and ChatPanel.svelte (its docking position) - one value
+	   so the three stay in sync instead of three hardcoded copies. */
+	--sidebar-width: 220px;
+}
+
+/* Without this, an element's declared `width` excludes its own padding/
+   border (the browser default, content-box) - Sidebar.svelte is exactly
+   this bug: width: var(--sidebar-width) + its own horizontal padding
+   rendered wider than --sidebar-width, so the sidebar's real right edge
+   (and its active nav-link's green highlight) extended past where
+   +layout.svelte's `margin-left: var(--sidebar-width)` and ChatPanel's
+   `left: var(--sidebar-width)` assumed it stopped, overlapping page
+   content. border-box makes a declared width always the true rendered
+   width, everywhere. */
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
 }
 
 body {

@@ -8,7 +8,7 @@ async function connect(): Promise<Client> {
 	if (!config.mcpUrl) {
 		throw new Error('MCP_URL is not configured - the Ask feature is unavailable');
 	}
-	const client = new Client({ name: 'val-analyzer-webui', version: '0.1.0' });
+	const client = new Client({ name: 'polyglot-webui', version: '0.1.0' });
 	const transport = new StreamableHTTPClientTransport(new URL(config.mcpUrl));
 	await client.connect(transport);
 	return client;

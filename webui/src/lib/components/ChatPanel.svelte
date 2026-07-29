@@ -7,6 +7,46 @@
 
 	let question = $state('');
 
+	// Native CSS `resize: horizontal` is unreliable on `position: fixed`
+	// elements across browsers (the drag interaction doesn't consistently
+	// commit a new width) - a manual pointer-driven handle instead, which
+	// behaves consistently everywhere.
+	const MIN_WIDTH = 280;
+	const DEFAULT_WIDTH = 420;
+	let panelWidth = $state(DEFAULT_WIDTH);
+	let resizing = $state(false);
+
+	function maxWidth(): number {
+		const sidebarWidth = browser
+			? parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width')) ||
+				220
+			: 220;
+		return window.innerWidth * 0.9 - sidebarWidth;
+	}
+
+	function startResize(e: PointerEvent) {
+		e.preventDefault();
+		resizing = true;
+		const startX = e.clientX;
+		const startWidth = panelWidth;
+		const limit = maxWidth();
+		const prevUserSelect = document.body.style.userSelect;
+		document.body.style.userSelect = 'none';
+
+		function onMove(ev: PointerEvent) {
+			const next = startWidth + (ev.clientX - startX);
+			panelWidth = Math.min(limit, Math.max(MIN_WIDTH, next));
+		}
+		function onUp() {
+			resizing = false;
+			document.body.style.userSelect = prevUserSelect;
+			window.removeEventListener('pointermove', onMove);
+			window.removeEventListener('pointerup', onUp);
+		}
+		window.addEventListener('pointermove', onMove);
+		window.addEventListener('pointerup', onUp);
+	}
+
 	// Assistant/user turns can carry a plain string (a user's typed
 	// question) or an array of content blocks (an assistant's text +
 	// tool_use blocks, or a user-role tool_result turn fed back after a
@@ -46,7 +86,7 @@
 </script>
 
 {#if chat.open}
-	<div class="chat-panel">
+	<div class="chat-panel" class:resizing style="width: {panelWidth}px">
 		<div class="chat-header">
 			<strong>Ask</strong>
 			<button class="chat-close" onclick={() => (chat.open = false)} aria-label="Close">×</button>
@@ -77,6 +117,14 @@
 			/>
 			<button type="submit" disabled={chat.pending || !question.trim()}>Send</button>
 		</form>
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="resize-handle"
+			role="separator"
+			aria-orientation="vertical"
+			aria-label="Resize chat panel"
+			onpointerdown={startResize}
+		></div>
 	</div>
 {/if}
 
@@ -84,22 +132,32 @@
 	.chat-panel {
 		position: fixed;
 		top: 0;
-		left: 0;
+		/* Docks immediately right of the persistent sidebar, not over it -
+		Sidebar.svelte occupies left:0 to var(--sidebar-width). */
+		left: var(--sidebar-width, 220px);
 		bottom: 0;
-		width: min(420px, 100vw);
 		min-width: 280px;
-		max-width: 90vw;
 		background: var(--panel-bg, #fffdf8);
 		border-right: 1px solid var(--border, #d8c8a0);
 		display: flex;
 		flex-direction: column;
 		z-index: 100;
 		box-shadow: var(--shadow-lg, 0 8px 24px rgba(95, 154, 111, 0.22));
-		/* Automatically resizable - the native browser drag handle (bottom-
-		right corner) lets the panel be widened/narrowed with no extra JS.
-		overflow: auto is required for `resize` to take effect at all. */
-		resize: horizontal;
-		overflow: auto;
+		overflow: hidden;
+	}
+	.resize-handle {
+		position: absolute;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		width: 6px;
+		cursor: ew-resize;
+		touch-action: none;
+		z-index: 101;
+	}
+	.resize-handle:hover,
+	.chat-panel.resizing .resize-handle {
+		background: color-mix(in srgb, var(--accent, #5f9a6f) 45%, transparent);
 	}
 	.chat-header {
 		display: flex;

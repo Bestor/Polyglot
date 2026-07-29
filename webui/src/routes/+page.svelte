@@ -1,26 +1,29 @@
 <script lang="ts">
-	import QueryRow from '$lib/components/QueryRow.svelte';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
 </script>
 
 <svelte:head>
-	<title>val-analyzer</title>
+	<title>Polyglot</title>
 </svelte:head>
 
 <main>
-	<h1>Recent queries</h1>
-	{#if data.queries.length === 0}
+	<h1>Data Explorer</h1>
+	{#if data.datasources.length === 0}
 		<p class="empty">
-			No recent queries. Either nothing has queried the backend yet, or tracing isn't configured
-			(recent-queries history is read from Jaeger, not stored separately - see
-			JAEGER_QUERY_URL).
+			No datasources onboarded yet. Onboard one via <code>POST /datasources</code> on polyglot.
 		</p>
 	{:else}
-		<div class="query-list">
-			{#each data.queries as query (query.id)}
-				<QueryRow {query} />
+		<div class="datasource-grid">
+			{#each data.datasources as ds (ds.name)}
+				<a class="datasource-card" href="/{encodeURIComponent(ds.name)}">
+					<h2>{ds.name}</h2>
+					{#if ds.description}
+						<p class="description">{ds.description}</p>
+					{/if}
+					<span class="table-count">{ds.tableCount} table{ds.tableCount === 1 ? '' : 's'}</span>
+				</a>
 			{/each}
 		</div>
 	{/if}
@@ -43,11 +46,45 @@
 		border-radius: 0.75rem;
 		padding: 1.5rem;
 	}
-	.query-list {
+	.datasource-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+		gap: 1rem;
+	}
+	.datasource-card {
+		display: block;
 		background: var(--panel-bg, #fffdf8);
 		border: 1px solid var(--border, #d8c8a0);
 		border-radius: 0.75rem;
+		box-shadow: var(--shadow, 0 2px 10px rgba(95, 154, 111, 0.18));
+		padding: 1.25rem;
+		text-decoration: none;
+		color: inherit;
+		transition:
+			transform 0.15s ease,
+			box-shadow 0.15s ease,
+			border-color 0.15s ease;
+	}
+	.datasource-card:hover {
+		transform: translateY(-2px);
 		box-shadow: var(--shadow-lg, 0 8px 24px rgba(95, 154, 111, 0.22));
-		padding: 0.5rem 0.75rem;
+		border-color: var(--accent, #5f9a6f);
+	}
+	.datasource-card h2 {
+		margin: 0 0 0.4rem;
+		color: var(--accent, #5f9a6f);
+	}
+	.description {
+		font-size: 0.9rem;
+		color: var(--muted-fg, #8a7a54);
+		margin: 0 0 0.75rem;
+	}
+	.table-count {
+		font-size: 0.8rem;
+		font-weight: 600;
+		background: var(--accent-bg, #dcefdd);
+		color: var(--accent-hover, #4f8a5f);
+		padding: 0.15rem 0.5rem;
+		border-radius: 999px;
 	}
 </style>
