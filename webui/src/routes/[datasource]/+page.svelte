@@ -1,6 +1,5 @@
 <script lang="ts">
 	import type { PageProps } from './$types';
-	import SqlQueryBox from '$lib/components/SqlQueryBox.svelte';
 	import WarmFunctionCard from '$lib/components/WarmFunctionCard.svelte';
 
 	let { data }: PageProps = $props();
@@ -19,8 +18,6 @@
 	{#if data.datasource.query_guidance}
 		<p class="guidance"><strong>Query guidance:</strong> {data.datasource.query_guidance}</p>
 	{/if}
-
-	<SqlQueryBox datasource={data.datasource.name} />
 
 	<div class="explorer-layout">
 		{#if data.tables.length === 0}

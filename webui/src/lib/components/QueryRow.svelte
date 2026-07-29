@@ -26,6 +26,19 @@
 			}
 		}
 	}
+
+	// Best effort: `response` is the query tool's raw result text, which is
+	// usually JSON (see internal/polyglot's QueryResponse shape) but isn't
+	// guaranteed to be - an error path or a non-query tool call could leave
+	// something else here. Falls back to the raw string unchanged rather
+	// than showing nothing if it doesn't parse.
+	function formatResponse(response: string): string {
+		try {
+			return JSON.stringify(JSON.parse(response), null, 2);
+		} catch {
+			return response;
+		}
+	}
 </script>
 
 <div class="query-row" class:expanded>
@@ -42,13 +55,16 @@
 
 	{#if expanded}
 		<div class="query-detail">
+			<h4>SQL</h4>
+			<pre>{query.sql}</pre>
+
 			{#if loading}
 				<p>Loading…</p>
 			{:else if error}
 				<p class="query-error">{error}</p>
 			{:else if detail}
 				<h4>Response</h4>
-				<pre>{detail.response}</pre>
+				<pre>{formatResponse(detail.response)}</pre>
 				<h4>Spans</h4>
 				<table>
 					<thead>

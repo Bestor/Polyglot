@@ -131,14 +131,21 @@
 <style>
 	.chat-panel {
 		position: fixed;
-		top: 0;
-		/* Docks immediately right of the persistent sidebar, not over it -
-		Sidebar.svelte occupies left:0 to var(--sidebar-width). */
-		left: var(--sidebar-width, 220px);
-		bottom: 0;
+		/* Floats beside the sidebar as a card, matching SqlQueryBox.svelte's
+		treatment (rounded on every side, not docked edge-to-edge) - and
+		bounded by max-height rather than pinned top:0/bottom:0, so the box's
+		own height reflects how much conversation is actually in it (header +
+		history + input) instead of always claiming the full viewport height
+		regardless of content. Once real content exceeds that bound,
+		.chat-history's own overflow-y:auto takes over rather than the whole
+		card growing further. */
+		top: 1rem;
+		left: calc(var(--sidebar-width, 220px) + 1rem);
+		max-height: calc(100vh - 2rem);
 		min-width: 280px;
 		background: var(--panel-bg, #fffdf8);
-		border-right: 1px solid var(--border, #d8c8a0);
+		border: 1px solid var(--border, #d8c8a0);
+		border-radius: 0.75rem;
 		display: flex;
 		flex-direction: column;
 		z-index: 100;
@@ -201,6 +208,12 @@
 		padding: 0.5rem 0.75rem;
 		border-radius: 0.75rem;
 		max-width: 90%;
+		/* Bounds the bubble to the panel's own width regardless of what's
+		inside it - a long unbroken token (URL, id, ...) wraps instead of
+		stretching the bubble/panel wider than intended. Structured content
+		(tables, code) that genuinely needs to be wider than this box gets
+		its own scrollable region below rather than relying on this. */
+		overflow-wrap: break-word;
 		box-shadow: var(--shadow, 0 2px 10px rgba(95, 154, 111, 0.18));
 	}
 	.chat-turn-user {
@@ -213,18 +226,37 @@
 		background: var(--muted-bg, #f1e6cd);
 		border: 1px solid var(--border, #d8c8a0);
 	}
+	/* Tables/code blocks size to their own content instead of being
+	squeezed to the bubble's width - if that's wider than the bubble, the
+	table/code block itself scrolls sideways (its own bounded box) rather
+	than cramming columns, wrapping code, or blowing out the whole panel. */
 	.chat-turn-assistant :global(table) {
+		display: block;
+		max-width: 100%;
+		overflow-x: auto;
 		border-collapse: collapse;
-		width: 100%;
 	}
 	.chat-turn-assistant :global(th),
 	.chat-turn-assistant :global(td) {
 		border: 1px solid var(--border, #d8c8a0);
 		padding: 0.25rem 0.5rem;
 		text-align: left;
+		white-space: nowrap;
 	}
 	.chat-turn-assistant :global(th) {
 		background: var(--accent-bg, #dcefdd);
+	}
+	.chat-turn-assistant :global(pre) {
+		max-width: 100%;
+		overflow-x: auto;
+		background: var(--bg, #faf5e9);
+		border: 1px solid var(--border, #d8c8a0);
+		border-radius: 0.4rem;
+		padding: 0.5rem 0.65rem;
+	}
+	.chat-turn-assistant :global(code) {
+		font-family: monospace;
+		font-size: 0.85em;
 	}
 	.chat-pending {
 		opacity: 0.7;

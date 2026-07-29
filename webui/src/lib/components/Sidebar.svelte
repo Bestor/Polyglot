@@ -1,11 +1,20 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { chat } from '$lib/stores/chat.svelte';
+	import { sqlbox, setSqlboxDatasource } from '$lib/stores/sqlbox.svelte';
 
 	// Highlights the Explorer link for both "/" and any drill-down route
 	// under it (/[datasource], /[datasource]/[table]) - only "/queries"
 	// itself should highlight the Recent Queries link.
 	const onExplorer = $derived(page.url.pathname === '/' || !page.url.pathname.startsWith('/queries'));
+
+	// Keeps the floating SQL query box's datasource in sync with the current
+	// route, even while the box itself is closed and unmounted - Sidebar is
+	// always mounted, unlike SqlQueryBox.svelte, which only exists in the DOM
+	// while sqlbox.open is true (see sqlbox.svelte.ts).
+	$effect(() => {
+		setSqlboxDatasource(page.params.datasource ?? null);
+	});
 </script>
 
 <nav class="sidebar">
@@ -15,6 +24,16 @@
 
 	<button class="nav-link nav-button" class:active={chat.open} onclick={() => (chat.open = !chat.open)}>
 		Ask
+	</button>
+
+	<button
+		class="nav-link nav-button"
+		class:active={sqlbox.open}
+		disabled={!sqlbox.datasource}
+		title={sqlbox.datasource ? 'Query ' + sqlbox.datasource : 'Open a datasource to query it'}
+		onclick={() => (sqlbox.open = !sqlbox.open)}
+	>
+		SQL Query
 	</button>
 
 	<!-- Deliberately the only link to /queries anywhere in the app - Recent
@@ -67,5 +86,10 @@
 		background: var(--accent-bg, #dcefdd);
 		color: var(--accent-hover, #4f8a5f);
 		font-weight: 700;
+	}
+	.nav-button:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+		pointer-events: none;
 	}
 </style>
