@@ -22,7 +22,14 @@
 					{#if ds.description}
 						<p class="description">{ds.description}</p>
 					{/if}
-					<span class="table-count">{ds.tableCount} table{ds.tableCount === 1 ? '' : 's'}</span>
+					<div class="badges">
+						<span class="table-count">{ds.tableCount} table{ds.tableCount === 1 ? '' : 's'}</span>
+						{#if ds.glossary.length > 0}
+							<span class="glossary-count"
+								>{ds.glossary.length} glossary term{ds.glossary.length === 1 ? '' : 's'}</span
+							>
+						{/if}
+					</div>
 				</a>
 			{/each}
 		</div>
@@ -79,12 +86,22 @@
 		color: var(--muted-fg, #8a7a54);
 		margin: 0 0 0.75rem;
 	}
-	.table-count {
+	.badges {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+	}
+	.table-count,
+	.glossary-count {
 		font-size: 0.8rem;
 		font-weight: 600;
 		background: var(--accent-bg, #dcefdd);
 		color: var(--accent-hover, #4f8a5f);
 		padding: 0.15rem 0.5rem;
 		border-radius: 999px;
+	}
+	.glossary-count {
+		background: var(--muted-bg, #f1e6cd);
+		color: var(--muted-fg, #8a7a54);
 	}
 </style>

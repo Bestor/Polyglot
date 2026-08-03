@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { PageProps } from './$types';
 	import WarmFunctionCard from '$lib/components/WarmFunctionCard.svelte';
+	import ExampleQueryList from '$lib/components/ExampleQueryList.svelte';
 
 	let { data }: PageProps = $props();
 </script>
@@ -17,6 +18,27 @@
 	{/if}
 	{#if data.datasource.query_guidance}
 		<p class="guidance"><strong>Query guidance:</strong> {data.datasource.query_guidance}</p>
+	{/if}
+
+	{#if data.datasource.glossary.length > 0}
+		<section class="curated-section">
+			<h2>Glossary</h2>
+			<dl class="glossary-list">
+				{#each data.datasource.glossary as entry (entry.term)}
+					<div class="glossary-entry">
+						<dt>{entry.term}</dt>
+						<dd>{entry.definition}</dd>
+					</div>
+				{/each}
+			</dl>
+		</section>
+	{/if}
+
+	{#if data.datasource.example_queries.length > 0}
+		<section class="curated-section">
+			<h2>Example queries</h2>
+			<ExampleQueryList queries={data.datasource.example_queries} />
+		</section>
 	{/if}
 
 	<div class="explorer-layout">
@@ -91,6 +113,36 @@
 		border-radius: 0.75rem;
 		padding: 1.5rem;
 	}
+	.curated-section {
+		margin-top: 1.5rem;
+		background: var(--panel-bg, #fffdf8);
+		border: 1px solid var(--border, #d8c8a0);
+		border-radius: 0.75rem;
+		box-shadow: var(--shadow, 0 2px 10px rgba(95, 154, 111, 0.18));
+		padding: 1rem 1.25rem;
+	}
+	.curated-section h2 {
+		margin: 0 0 0.75rem;
+		font-size: 1rem;
+		color: var(--accent, #5f9a6f);
+	}
+	.glossary-list {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+		gap: 0.75rem 1.5rem;
+		margin: 0;
+	}
+	.glossary-entry dt {
+		font-weight: 700;
+		font-family: monospace;
+		color: #3f3826;
+	}
+	.glossary-entry dd {
+		margin: 0.15rem 0 0;
+		font-size: 0.85rem;
+		color: var(--muted-fg, #8a7a54);
+	}
+
 	.explorer-layout {
 		display: flex;
 		align-items: flex-start;

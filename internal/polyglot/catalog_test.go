@@ -2,8 +2,10 @@ package polyglot
 
 import (
 	"context"
+	"strings"
 	"testing"
 
+	"val-analyzer/internal/ai"
 	"val-analyzer/internal/dataprovider"
 	"val-analyzer/internal/jobstore"
 )
@@ -112,6 +114,149 @@ func TestReconcileCatalog_AddsAndRemovesTables(t *testing.T) {
 	}
 	if _, err := app.FindFirstRecordByFilter("columns", "name = 'sku'"); err == nil {
 		t.Error("expected the sku column to have been cascade-deleted along with its table")
+	}
+}
+
+// TestReconcileCatalog_ComputesTableStats proves reconcileTableStats
+// populates row_count/sample_rows/last_updated from the datasource's own
+// Query method (not any provider-specific introspection) - and that
+// last_updated is only set when the table has an "updated" column, per
+// its own best-effort doc comment.
+func TestReconcileCatalog_ComputesTableStats(t *testing.T) {
+	app := newTestApp(t)
+	provider := fakeProvider{
+		typ: "widgets",
+		catalog: []dataprovider.TableCatalog{
+			{Name: "widgets", Columns: []dataprovider.ColumnCatalog{
+				{Name: "sku", Type: "TEXT"},
+				{Name: "updated", Type: "TEXT"},
+			}},
+		},
+		queryFunc: func(sqlText string) (ai.QueryResult, error) {
+			switch {
+			case strings.Contains(sqlText, "COUNT(*)"):
+				return ai.QueryResult{Columns: []string{"n"}, Rows: [][]any{{int64(42)}}}, nil
+			case strings.Contains(sqlText, "LIMIT 5"):
+				return ai.QueryResult{Columns: []string{"sku"}, Rows: [][]any{{"A1"}, {"B2"}}}, nil
+			case strings.Contains(sqlText, "MAX("):
+				return ai.QueryResult{Columns: []string{"m"}, Rows: [][]any{{"2026-07-29T04:08:26Z"}}}, nil
+			default:
+				return ai.QueryResult{}, nil
+			}
+		},
+	}
+	reg, jobs := newTestRegistry(map[string]dataprovider.Provider{"widgets": provider})
+
+	resp, err := reg.Onboard(context.Background(), app, "widgets", "widgets", map[string]any{"api_key": "k"})
+	if err != nil {
+		t.Fatalf("Onboard: %v", err)
+	}
+	waitForJob(t, jobs, resp.ReconcileJobID)
+
+	tableRec, err := app.FindFirstRecordByFilter("tables", "name = 'widgets'")
+	if err != nil {
+		t.Fatalf("finding tables row: %v", err)
+	}
+	if tableRec.GetInt("row_count") != 42 {
+		t.Errorf("row_count = %d, want 42", tableRec.GetInt("row_count"))
+	}
+	var sampleRows []map[string]any
+	if err := tableRec.UnmarshalJSONField("sample_rows", &sampleRows); err != nil {
+		t.Fatalf("unmarshaling sample_rows: %v", err)
+	}
+	if len(sampleRows) != 2 {
+		t.Errorf("expected 2 sample rows, got %+v", sampleRows)
+	}
+	if tableRec.GetDateTime("last_updated").Time().IsZero() {
+		t.Error("expected last_updated to be set for a table with an updated column")
+	}
+}
+
+// TestReconcileCatalog_NoUpdatedColumn_SkipsFreshness proves a table
+// without an "updated" column never issues the MAX(...) freshness query
+// and leaves last_updated unset - the heuristic isn't a universal
+// guarantee.
+func TestReconcileCatalog_NoUpdatedColumn_SkipsFreshness(t *testing.T) {
+	app := newTestApp(t)
+	provider := fakeProvider{
+		typ: "widgets",
+		catalog: []dataprovider.TableCatalog{
+			{Name: "widgets", Columns: []dataprovider.ColumnCatalog{{Name: "sku", Type: "TEXT"}}},
+		},
+		queryFunc: func(sqlText string) (ai.QueryResult, error) {
+			if strings.Contains(sqlText, "MAX(") {
+				t.Error("did not expect a freshness query for a table with no updated column")
+			}
+			return ai.QueryResult{}, nil
+		},
+	}
+	reg, jobs := newTestRegistry(map[string]dataprovider.Provider{"widgets": provider})
+
+	resp, err := reg.Onboard(context.Background(), app, "widgets", "widgets", map[string]any{"api_key": "k"})
+	if err != nil {
+		t.Fatalf("Onboard: %v", err)
+	}
+	waitForJob(t, jobs, resp.ReconcileJobID)
+
+	tableRec, err := app.FindFirstRecordByFilter("tables", "name = 'widgets'")
+	if err != nil {
+		t.Fatalf("finding tables row: %v", err)
+	}
+	if !tableRec.GetDateTime("last_updated").Time().IsZero() {
+		t.Errorf("expected last_updated to be unset, got %v", tableRec.GetDateTime("last_updated"))
+	}
+}
+
+// TestReconcileCatalog_RefreshesRelations proves references_table/
+// references_column are introspected like type, not curated like
+// description: set on create, and refreshed (not preserved) when the live
+// source's relation target changes between two reconcile passes.
+func TestReconcileCatalog_RefreshesRelations(t *testing.T) {
+	app := newTestApp(t)
+	provider := &mutableFakeProvider{
+		catalog: []dataprovider.TableCatalog{
+			{Name: "match_players", Columns: []dataprovider.ColumnCatalog{
+				{Name: "player", Type: "TEXT", ReferencesTable: "players", ReferencesColumn: "id"},
+			}},
+		},
+	}
+	reg, jobs := newTestRegistry(map[string]dataprovider.Provider{"widgets": provider})
+
+	resp, err := reg.Onboard(context.Background(), app, "widgets", "widgets", map[string]any{"api_key": "k"})
+	if err != nil {
+		t.Fatalf("Onboard: %v", err)
+	}
+	waitForJob(t, jobs, resp.ReconcileJobID)
+
+	colRec, err := app.FindFirstRecordByFilter("columns", "name = 'player'")
+	if err != nil {
+		t.Fatalf("finding player column: %v", err)
+	}
+	if colRec.GetString("references_table") != "players" || colRec.GetString("references_column") != "id" {
+		t.Errorf("expected relation set on create, got references_table=%q references_column=%q",
+			colRec.GetString("references_table"), colRec.GetString("references_column"))
+	}
+
+	// The relation's target changes (e.g. a schema change upstream) -
+	// references_table/references_column must refresh, unlike a curated
+	// field.
+	provider.instance.catalog = []dataprovider.TableCatalog{
+		{Name: "match_players", Columns: []dataprovider.ColumnCatalog{
+			{Name: "player", Type: "TEXT", ReferencesTable: "accounts", ReferencesColumn: "id"},
+		}},
+	}
+	job, err := reg.Reconcile(app, "widgets")
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	waitForJob(t, jobs, job.ID)
+
+	after, err := app.FindFirstRecordByFilter("columns", "name = 'player'")
+	if err != nil {
+		t.Fatalf("re-reading player column: %v", err)
+	}
+	if after.GetString("references_table") != "accounts" {
+		t.Errorf("expected references_table refreshed to %q, got %q", "accounts", after.GetString("references_table"))
 	}
 }
 

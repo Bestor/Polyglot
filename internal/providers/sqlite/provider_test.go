@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	_ "modernc.org/sqlite"
+
+	"val-analyzer/internal/dataprovider"
 )
 
 func setupTestDB(t *testing.T, path string) {
@@ -115,6 +117,73 @@ func TestInstance_Catalog(t *testing.T) {
 	}
 	if len(catalog[0].Columns) != 2 {
 		t.Fatalf("expected 2 columns, got %+v", catalog[0].Columns)
+	}
+}
+
+// TestInstance_Catalog_DetectsForeignKeys proves Catalog() picks up a
+// declared SQLite FOREIGN KEY constraint via PRAGMA foreign_key_list and
+// sets ReferencesTable/ReferencesColumn accordingly, leaving a plain
+// column (including the referenced table's own primary key) untouched.
+func TestInstance_Catalog_DetectsForeignKeys(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "data.db")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("opening setup db: %v", err)
+	}
+	if _, err := db.Exec("CREATE TABLE authors (id TEXT PRIMARY KEY, name TEXT)"); err != nil {
+		t.Fatalf("create authors: %v", err)
+	}
+	if _, err := db.Exec("CREATE TABLE books (id TEXT PRIMARY KEY, author_id TEXT, FOREIGN KEY(author_id) REFERENCES authors(id))"); err != nil {
+		t.Fatalf("create books: %v", err)
+	}
+	db.Close()
+
+	p := Provider{}
+	inst, err := p.New(context.Background(), map[string]any{"path": dbPath})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer inst.Close()
+
+	catalog, err := inst.Catalog(context.Background())
+	if err != nil {
+		t.Fatalf("Catalog: %v", err)
+	}
+
+	var books *dataprovider.TableCatalog
+	for i := range catalog {
+		if catalog[i].Name == "books" {
+			books = &catalog[i]
+		}
+	}
+	if books == nil {
+		t.Fatal("books table missing from catalog")
+	}
+
+	var authorID, id *dataprovider.ColumnCatalog
+	for i := range books.Columns {
+		switch books.Columns[i].Name {
+		case "author_id":
+			authorID = &books.Columns[i]
+		case "id":
+			id = &books.Columns[i]
+		}
+	}
+	if authorID == nil {
+		t.Fatal("author_id column missing from books")
+	}
+	if authorID.ReferencesTable != "authors" || authorID.ReferencesColumn != "id" {
+		t.Errorf("expected relation to authors.id, got references_table=%q references_column=%q",
+			authorID.ReferencesTable, authorID.ReferencesColumn)
+	}
+	if id == nil {
+		t.Fatal("id column missing from books")
+	}
+	if id.ReferencesTable != "" || id.ReferencesColumn != "" {
+		t.Errorf("expected no relation on a plain primary key column, got references_table=%q references_column=%q",
+			id.ReferencesTable, id.ReferencesColumn)
 	}
 }
 

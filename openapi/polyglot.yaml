@@ -115,20 +115,41 @@ paths:
       summary: Describe every onboarded datasource's tables/columns/functions and curated guidance
       description: |
         Returns polyglot's persisted catalog snapshot - every onboarded datasource's
-        connection-level description/query_guidance, every table's columns/types/hand-curated
-        description/query_guidance, and every background action that datasource exposes (if any -
-        most don't). This is built from a snapshot kept current by an async reconciliation pass (see
-        POST /datasources and POST /datasources/reconcile), not a live call into every datasource, so
-        this endpoint's latency never depends on any one datasource's health or speed - it's the
-        discovery mechanism an MCP client or AI model uses to know what it can query (and what it can
-        trigger via POST /warm), without reading polyglot's source or waiting on a slow/unreachable
-        connection.
+        connection-level description/query_guidance/glossary/example_queries, every table's
+        columns/types/relations/row_count/sample_rows/freshness plus its hand-curated
+        description/query_guidance/good_for/bad_for/known_gaps/example_queries, and every background
+        action that datasource exposes (if any - most don't). This is built from a snapshot kept
+        current by an async reconciliation pass (see POST /datasources and
+        POST /datasources/reconcile), not a live call into every datasource, so this endpoint's
+        latency never depends on any one datasource's health or speed - it's the discovery mechanism
+        an MCP client or AI model uses to know what it can query (and what it can trigger via
+        POST /warm), without reading polyglot's source or waiting on a slow/unreachable connection.
 
-        `query_guidance` is distinct from `description`: description says what a table/connection
-        means, query_guidance says how to query it well (e.g. "this connection is a columnar OLAP
-        warehouse - always filter on the partition column" at the datasource level, or "partitioned
-        by event_date - always filter on it" at the table level). Both start empty until curated via
-        POST /datasources/annotate, POST /tables/annotate, or POST /columns/annotate.
+        Two different kinds of field are mixed together in this response - telling them apart matters:
+        - **Introspected** (`type`, `references_table`/`references_column`, `row_count`,
+          `sample_rows`, `last_updated`): live facts about the data, refreshed automatically on every
+          reconcile. Never hand-edit these - there's no annotate field for them, they're recomputed
+          the next reconcile regardless.
+        - **Curated** (`description`, `query_guidance`, `good_for`, `bad_for`, `known_gaps`,
+          `glossary`, `example_queries`): documentation, empty until someone - a human or an MCP-
+          connected AI model - writes it via POST /datasources/annotate, POST /tables/annotate,
+          POST /columns/annotate, or POST /functions/annotate. Reconcile never touches these.
+
+        **If you are an AI model reading this**: an empty curated field on a table/datasource you're
+        about to query is a real gap, not a formatting quirk - you have everything you need to fill
+        it in without asking a human first. `sample_rows`/`row_count` are given so you don't need to
+        run your own `SELECT * ... LIMIT 5` just to see the data's shape; `references_table`/
+        `references_column` on a column tell you exactly how to JOIN it, so never guess a join column
+        name (e.g. a hallucinated `player_id`) when this field is present. When you notice a
+        meaningful gap - no `description`, no `good_for`/`bad_for`, an enum-like column whose values
+        you had to discover via `SELECT DISTINCT`, a query you constructed that worked well - propose
+        an annotation via the relevant `*/annotate` endpoint rather than silently discarding what you
+        just learned; the next conversation benefits from it. This is optional, best-effort curation,
+        not a precondition for answering the current question.
+
+        `references_table`/`references_column` on a column are introspected, not curated: a
+        PocketBase relation field (for the httpsql-backed Valorant datasource) or a declared SQLite
+        foreign key (for a plain sqlite datasource) when mechanically known, absent otherwise.
 
         `functions[]` lists whatever named background actions the datasource itself exposes (e.g. the
         Valorant datasource's `sync_matches`) - each entry's `name`/`datasource`/`args` are exactly
@@ -147,12 +168,29 @@ paths:
                   - name: valorant
                     description: "Valorant esports match/player data."
                     query_guidance: ""
+                    glossary:
+                      - term: ACS
+                        definition: "Average Combat Score - Riot's composite per-round performance metric."
+                    example_queries:
+                      - question: "What is a player's full match history?"
+                        sql: "SELECT m.started_at, m.map FROM matches m JOIN match_players mp ON mp.match = m.id JOIN players p ON mp.player = p.id WHERE p.riot_name = ? AND p.riot_tag = ? ORDER BY m.started_at DESC"
                 tables:
                   - id: "rec_abc123"
                     name: players
                     description: "Cached Riot account identities."
                     datasource: valorant
                     query_guidance: ""
+                    good_for: "Resolving a Riot ID (name#tag) to the stable internal id every other table joins against."
+                    bad_for: ""
+                    known_gaps: ""
+                    example_queries: []
+                    row_count: 1509
+                    sample_rows:
+                      - id: "rec_pqr345"
+                        riot_name: OrBest
+                        riot_tag: NA1
+                        region: na
+                    last_updated: "2026-07-29T04:08:26Z"
                     columns:
                       - id: "rec_def456"
                         name: puuid
@@ -162,6 +200,25 @@ paths:
                         name: name
                         type: TEXT
                         description: "Riot ID name, before the #."
+                  - id: "rec_stu678"
+                    name: match_players
+                    description: "One row per player per match, with their stats for that match."
+                    datasource: valorant
+                    query_guidance: ""
+                    good_for: ""
+                    bad_for: ""
+                    known_gaps: ""
+                    example_queries: []
+                    row_count: 48200
+                    sample_rows: []
+                    last_updated: "2026-07-29T04:08:26Z"
+                    columns:
+                      - id: "rec_vwx901"
+                        name: player
+                        type: TEXT
+                        description: ""
+                        references_table: players
+                        references_column: id
                 functions:
                   - id: "rec_jkl012"
                     name: sync_matches
@@ -313,12 +370,19 @@ paths:
   /datasources/annotate:
     post:
       operationId: annotateDatasource
-      summary: Curate a datasource's connection-level description/query_guidance
+      summary: Curate a datasource's connection-level description/query_guidance/glossary/example_queries
       description: |
-        Patches only the fields present in the request body - omit a field to leave it unchanged,
-        or send an empty string to explicitly clear it. `query_guidance` here is connection-level
+        Patches only the fields present in the request body - omit a field to leave it unchanged, or
+        send an empty string/array to explicitly clear it. `query_guidance` here is connection-level
         AI guidance distinct from any one table's own (e.g. "this connection is a columnar OLAP
         warehouse - queries without a partition filter will be slow").
+
+        `glossary` and `example_queries` (see GET /metadata) each replace the entire list, not a
+        per-entry merge - if adding one term/query to an existing list, include the existing entries
+        too. Any MCP-connected AI model is expected to call this (and POST /tables/annotate) on its
+        own initiative when it notices an undocumented datasource/table or discovers something worth
+        recording (an acronym's real meaning, a query pattern that worked) - see GET /metadata's own
+        description for the full curation workflow.
       requestBody:
         required: true
         content:
@@ -329,6 +393,12 @@ paths:
               name: valorant
               description: "Valorant esports match/player data, synced from the HenrikDev API."
               query_guidance: "matches.raw_json is large - prefer the typed columns/tables for aggregate queries."
+              glossary:
+                - term: ACS
+                  definition: "Average Combat Score - Riot's composite per-round performance metric."
+              example_queries:
+                - question: "What is a player's full match history?"
+                  sql: "SELECT m.started_at, m.map FROM matches m JOIN match_players mp ON mp.match = m.id JOIN players p ON mp.player = p.id WHERE p.riot_name = ? AND p.riot_tag = ? ORDER BY m.started_at DESC"
       responses:
         "200":
           description: Annotation saved.
@@ -358,10 +428,21 @@ paths:
   /tables/annotate:
     post:
       operationId: annotateTable
-      summary: Curate one table's description/query_guidance
+      summary: Curate one table's description/query_guidance/good_for/bad_for/known_gaps/example_queries
       description: |
-        Patches only the fields present in the request body. `id` is a table's id from
-        GET /metadata's `tables[].id`.
+        Patches only the fields present in the request body - omit a field to leave it unchanged, or
+        send an empty string/array to explicitly clear it. `id` is a table's id from GET /metadata's
+        `tables[].id`.
+
+        `good_for`/`bad_for` are two independent fields, not one - e.g. good_for "aggregate win-rate
+        queries", bad_for "don't join raw_json directly, extract typed columns instead". `known_gaps`
+        documents coverage/quality issues you've noticed (e.g. "only populated for matches synced
+        after 2026-03"). `example_queries` (see GET /metadata) replaces the entire list, not a
+        per-entry merge - if adding one query to an existing list, include the existing entries too;
+        consider running a proposed query via GET /query first to confirm it actually executes before
+        saving it here. Any MCP-connected AI model is expected to call this (and
+        POST /datasources/annotate) on its own initiative when it notices a gap - see GET /metadata's
+        own description for the full curation workflow.
       requestBody:
         required: true
         content:
@@ -372,6 +453,12 @@ paths:
               id: "rec_abc123"
               description: "One row per cached Valorant match."
               query_guidance: ""
+              good_for: "Looking up a specific match's metadata (map, duration, start time)."
+              bad_for: "Per-player stats - join match_players instead, this table has no player-level columns."
+              known_gaps: ""
+              example_queries:
+                - question: "How many matches were played on a given map?"
+                  sql: "SELECT COUNT(*) FROM matches m JOIN maps ON m.map = maps.id WHERE maps.name = ?"
       responses:
         "200":
           description: Annotation saved.
@@ -858,6 +945,42 @@ components:
         description:
           type: string
           description: Hand-authored semantic context; empty until curated via POST /columns/annotate.
+        references_table:
+          type: string
+          description: |
+            Introspected (not curated), refreshed every reconcile - the target table of a
+            foreign-key-like relation, when mechanically known (a PocketBase relation field, a
+            declared SQLite foreign key). Absent when this column has no known relation. Use this
+            (not a guessed column name) to construct a JOIN - e.g. match_players.player with
+            references_table "players"/references_column "id" means
+            `JOIN players ON match_players.player = players.id`, not a guess like `player_id`.
+        references_column:
+          type: string
+          description: The target column of the relation described by references_table - almost always "id". Absent under the same conditions as references_table.
+
+    ExampleQuery:
+      type: object
+      required: [question, sql]
+      description: A curated, vetted (question, sql) pair - working SQL for a real question, meant to be pattern-matched against rather than re-derived from scratch.
+      properties:
+        question:
+          type: string
+          example: "What is a player's full match history?"
+        sql:
+          type: string
+          example: "SELECT m.started_at, m.map FROM matches m JOIN match_players mp ON mp.match = m.id JOIN players p ON mp.player = p.id WHERE p.riot_name = ? AND p.riot_tag = ? ORDER BY m.started_at DESC"
+
+    GlossaryEntry:
+      type: object
+      required: [term, definition]
+      description: A domain acronym/term definition, e.g. for a stat abbreviation or an enum-like raw value that isn't self-explanatory.
+      properties:
+        term:
+          type: string
+          example: ACS
+        definition:
+          type: string
+          example: "Average Combat Score - Riot's composite per-round performance metric."
 
     TableDescription:
       type: object
@@ -877,6 +1000,32 @@ components:
         query_guidance:
           type: string
           description: Hand-authored AI guidance on how to query this table well (distinct from description); empty until curated.
+        good_for:
+          type: string
+          description: Curated - what this table is well-suited to answer. Empty until curated via POST /tables/annotate.
+        bad_for:
+          type: string
+          description: Curated - known anti-patterns or misuse for this table (e.g. "don't aggregate raw_json, it's unindexed"). Empty until curated.
+        known_gaps:
+          type: string
+          description: Curated - known data quality/coverage gaps (e.g. "damage_events only populated for matches synced after 2026-03"). Empty until curated.
+        example_queries:
+          type: array
+          description: Curated, table-scoped vetted example queries.
+          items:
+            $ref: "#/components/schemas/ExampleQuery"
+        row_count:
+          type: integer
+          description: Introspected (not curated) - this table's row count as of the last reconcile pass.
+        sample_rows:
+          type: array
+          description: Introspected (not curated) - up to 5 example rows from this table, as of the last reconcile pass, same shape GET /query returns. Use this instead of running your own `SELECT * ... LIMIT 5` to see what the data actually looks like.
+          items:
+            $ref: "#/components/schemas/Row"
+        last_updated:
+          type: string
+          format: date-time
+          description: Introspected (not curated), best-effort - the most recent value of this table's own "updated" column as of the last reconcile pass. Absent if the table has no such column (not every table has a well-defined freshness signal).
         columns:
           type: array
           items:
@@ -894,6 +1043,16 @@ components:
         query_guidance:
           type: string
           description: Hand-authored AI guidance on how to query this connection well, distinct from any one table's own; empty until curated.
+        glossary:
+          type: array
+          description: Curated, connection-wide glossary of domain acronyms/terms (e.g. ACS, ADR, KAST) that span many tables - check here before guessing what an abbreviation means.
+          items:
+            $ref: "#/components/schemas/GlossaryEntry"
+        example_queries:
+          type: array
+          description: Curated, cross-table "cookbook" example queries for this datasource (e.g. a player's full match history, joining several tables).
+          items:
+            $ref: "#/components/schemas/ExampleQuery"
 
     FunctionArgDescription:
       type: object
@@ -1056,6 +1215,16 @@ components:
         query_guidance:
           type: string
           description: Omit to leave unchanged; send an empty string to explicitly clear it.
+        glossary:
+          type: array
+          description: Omit to leave unchanged; send an empty array to explicitly clear it. Replaces the entire glossary - not a per-term merge.
+          items:
+            $ref: "#/components/schemas/GlossaryEntry"
+        example_queries:
+          type: array
+          description: Omit to leave unchanged; send an empty array to explicitly clear it. Replaces the entire list - not a per-entry merge.
+          items:
+            $ref: "#/components/schemas/ExampleQuery"
 
     AnnotateTableRequest:
       type: object
@@ -1070,6 +1239,20 @@ components:
         query_guidance:
           type: string
           description: Omit to leave unchanged; send an empty string to explicitly clear it.
+        good_for:
+          type: string
+          description: Omit to leave unchanged; send an empty string to explicitly clear it.
+        bad_for:
+          type: string
+          description: Omit to leave unchanged; send an empty string to explicitly clear it.
+        known_gaps:
+          type: string
+          description: Omit to leave unchanged; send an empty string to explicitly clear it.
+        example_queries:
+          type: array
+          description: Omit to leave unchanged; send an empty array to explicitly clear it. Replaces the entire list - not a per-entry merge. Consider running a proposed query first (via GET /query) to confirm it actually executes before saving it here.
+          items:
+            $ref: "#/components/schemas/ExampleQuery"
 
     AnnotateColumnRequest:
       type: object

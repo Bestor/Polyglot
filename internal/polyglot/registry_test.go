@@ -21,7 +21,10 @@ type fakeProvider struct {
 	typ          string
 	secretConfig bool
 	catalog      []dataprovider.TableCatalog
-	newErr       error
+	// queryFunc is threaded into the fakeInstance New produces - see
+	// fakeInstance.queryFunc's own doc comment.
+	queryFunc func(sqlText string) (ai.QueryResult, error)
+	newErr    error
 	// functionsCapable, when true, makes New return a *fakeFunctionInstance
 	// (implementing dataprovider.FunctionRunner) instead of a plain
 	// *fakeInstance - existing fakeProvider{...} call sites that don't set
@@ -45,7 +48,7 @@ func (p fakeProvider) New(ctx context.Context, config map[string]any) (dataprovi
 	if _, ok := config["api_key"].(string); !ok {
 		return nil, errors.New("api_key is required")
 	}
-	base := &fakeInstance{catalog: p.catalog}
+	base := &fakeInstance{catalog: p.catalog, queryFunc: p.queryFunc}
 	if p.functionsCapable {
 		return &fakeFunctionInstance{
 			fakeInstance:   base,
@@ -62,12 +65,20 @@ func (p fakeProvider) New(ctx context.Context, config map[string]any) (dataprovi
 type fakeInstance struct {
 	closed  bool
 	catalog []dataprovider.TableCatalog
+	// queryFunc, when set, lets a test script Query's response per SQL
+	// text (e.g. reconcileTableStats' own COUNT(*)/LIMIT 5/MAX(...)
+	// queries) - nil preserves the old always-empty-result behavior for
+	// every test that doesn't care about Query at all.
+	queryFunc func(sqlText string) (ai.QueryResult, error)
 }
 
 func (i *fakeInstance) Catalog(ctx context.Context) ([]dataprovider.TableCatalog, error) {
 	return i.catalog, nil
 }
 func (i *fakeInstance) Query(ctx context.Context, sqlText string) (ai.QueryResult, error) {
+	if i.queryFunc != nil {
+		return i.queryFunc(sqlText)
+	}
 	return ai.QueryResult{}, nil
 }
 func (i *fakeInstance) Close() error { i.closed = true; return nil }

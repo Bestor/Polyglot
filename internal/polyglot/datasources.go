@@ -116,12 +116,18 @@ type AnnotateDatasourceRequest struct {
 	Name          string  `json:"name"`
 	Description   *string `json:"description"`
 	QueryGuidance *string `json:"query_guidance"`
+	// Glossary/ExampleQueries are pointer-to-slice, not plain slices, for
+	// the same reason Description/QueryGuidance are pointer-to-string -
+	// "omitted" and "explicitly cleared to []" need to stay distinguishable
+	// for a real partial update.
+	Glossary       *[]GlossaryEntry `json:"glossary"`
+	ExampleQueries *[]ExampleQuery  `json:"example_queries"`
 }
 
 // handleAnnotateDatasource implements POST /datasources/annotate: patches
-// a datasource's connection-level description/query_guidance. Pointer
-// fields so "omitted" and "explicitly cleared to empty" are
-// distinguishable - a real partial update.
+// a datasource's connection-level description/query_guidance/glossary/
+// example_queries. Pointer fields so "omitted" and "explicitly cleared to
+// empty" are distinguishable - a real partial update.
 func handleAnnotateDatasource() func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		var req AnnotateDatasourceRequest
@@ -146,6 +152,12 @@ func handleAnnotateDatasource() func(e *core.RequestEvent) error {
 		if req.QueryGuidance != nil {
 			rec.Set("query_guidance", *req.QueryGuidance)
 		}
+		if req.Glossary != nil {
+			rec.Set("glossary", *req.Glossary)
+		}
+		if req.ExampleQueries != nil {
+			rec.Set("example_queries", *req.ExampleQueries)
+		}
 		if err := e.App.Save(rec); err != nil {
 			return e.InternalServerError("save failed", err)
 		}
@@ -157,11 +169,17 @@ type AnnotateTableRequest struct {
 	ID            string  `json:"id"`
 	Description   *string `json:"description"`
 	QueryGuidance *string `json:"query_guidance"`
+	GoodFor       *string `json:"good_for"`
+	BadFor        *string `json:"bad_for"`
+	KnownGaps     *string `json:"known_gaps"`
+	// Pointer-to-slice, not a plain slice - see AnnotateDatasourceRequest's
+	// Glossary field for why.
+	ExampleQueries *[]ExampleQuery `json:"example_queries"`
 }
 
 // handleAnnotateTable implements POST /tables/annotate: patches one
-// table's curated description/query_guidance, looked up by the id
-// GET /metadata exposes.
+// table's curated description/query_guidance/good_for/bad_for/known_gaps/
+// example_queries, looked up by the id GET /metadata exposes.
 func handleAnnotateTable() func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		var req AnnotateTableRequest
@@ -182,6 +200,18 @@ func handleAnnotateTable() func(e *core.RequestEvent) error {
 		}
 		if req.QueryGuidance != nil {
 			rec.Set("query_guidance", *req.QueryGuidance)
+		}
+		if req.GoodFor != nil {
+			rec.Set("good_for", *req.GoodFor)
+		}
+		if req.BadFor != nil {
+			rec.Set("bad_for", *req.BadFor)
+		}
+		if req.KnownGaps != nil {
+			rec.Set("known_gaps", *req.KnownGaps)
+		}
+		if req.ExampleQueries != nil {
+			rec.Set("example_queries", *req.ExampleQueries)
 		}
 		if err := e.App.Save(rec); err != nil {
 			return e.InternalServerError("save failed", err)

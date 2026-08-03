@@ -44,6 +44,14 @@ func handleQuery(query ai.QueryFunc) func(e *core.RequestEvent) error {
 type schemaColumn struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
+	// ReferencesTable/ReferencesColumn mirror dataprovider.ColumnCatalog's
+	// own fields exactly (this response is decoded straight into that type
+	// by internal/providers/httpsql, no reshaping in between) - set for a
+	// *core.RelationField column, empty otherwise. ReferencesColumn is
+	// always "id", PocketBase relations always point at the target's
+	// primary id.
+	ReferencesTable  string `json:"references_table,omitempty"`
+	ReferencesColumn string `json:"references_column,omitempty"`
 }
 
 type schemaTable struct {
@@ -78,6 +86,15 @@ func handleSchema(app core.App) func(e *core.RequestEvent) error {
 			return e.InternalServerError("failed to list collections", err)
 		}
 
+		// Built once so relation resolution below is a map lookup, not an
+		// extra query per relation field - every valid relation target is
+		// already in this same collections slice, since Valorant's domain
+		// tables only ever relate to other Valorant domain tables.
+		nameByCollectionID := make(map[string]string, len(collections))
+		for _, col := range collections {
+			nameByCollectionID[col.Id] = col.Name
+		}
+
 		resp := schemaResponse{Tables: make([]schemaTable, 0, len(collections))}
 		for _, col := range collections {
 			// core.CollectionTypeBase alone isn't enough to exclude
@@ -91,7 +108,14 @@ func handleSchema(app core.App) func(e *core.RequestEvent) error {
 			}
 			table := schemaTable{Name: col.Name, Columns: make([]schemaColumn, 0, len(col.Fields))}
 			for _, f := range col.Fields {
-				table.Columns = append(table.Columns, schemaColumn{Name: f.GetName(), Type: f.Type()})
+				column := schemaColumn{Name: f.GetName(), Type: f.Type()}
+				if rf, ok := f.(*core.RelationField); ok {
+					if targetName, ok := nameByCollectionID[rf.CollectionId]; ok {
+						column.ReferencesTable = targetName
+						column.ReferencesColumn = "id"
+					}
+				}
+				table.Columns = append(table.Columns, column)
 			}
 			resp.Tables = append(resp.Tables, table)
 		}

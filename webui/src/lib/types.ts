@@ -46,6 +46,21 @@ export interface ColumnDescription {
 	name: string;
 	type: string;
 	description: string;
+	// Introspected (not curated), refreshed every reconcile - empty when no
+	// relation is mechanically known. See internal/polyglot/catalog.go's
+	// reconcileColumns.
+	references_table?: string;
+	references_column?: string;
+}
+
+export interface ExampleQuery {
+	question: string;
+	sql: string;
+}
+
+export interface GlossaryEntry {
+	term: string;
+	definition: string;
 }
 
 export interface TableDescription {
@@ -54,6 +69,17 @@ export interface TableDescription {
 	description: string;
 	datasource: string;
 	query_guidance: string;
+	// Curated - only ever change via POST /tables/annotate.
+	good_for: string;
+	bad_for: string;
+	known_gaps: string;
+	example_queries: ExampleQuery[];
+	// Introspected (not curated) - computed fresh every reconcile by
+	// internal/polyglot/catalog.go's reconcileTableStats. last_updated is
+	// best-effort (empty if the table has no "updated" column).
+	row_count: number;
+	sample_rows: Record<string, unknown>[];
+	last_updated?: string;
 	columns: ColumnDescription[];
 }
 
@@ -61,6 +87,9 @@ export interface DatasourceGuidance {
 	name: string;
 	description: string;
 	query_guidance: string;
+	// Curated, connection-level - see internal/polyglot/metadata.go.
+	glossary: GlossaryEntry[];
+	example_queries: ExampleQuery[];
 }
 
 export interface FunctionArgDescription {

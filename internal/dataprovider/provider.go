@@ -49,6 +49,13 @@ type Provider interface {
 type ColumnCatalog struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
+	// ReferencesTable/ReferencesColumn are the target of a foreign-key-like
+	// relation, when the provider can determine one mechanically (a
+	// PocketBase relation field for httpsql, a declared SQLite FK for
+	// sqlite) - empty when there is none or it isn't mechanically knowable.
+	// ReferencesColumn is almost always "id".
+	ReferencesTable  string `json:"references_table,omitempty"`
+	ReferencesColumn string `json:"references_column,omitempty"`
 }
 
 // TableCatalog describes one table's live, introspected shape.

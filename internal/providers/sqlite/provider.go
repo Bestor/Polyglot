@@ -146,6 +146,35 @@ func (i *instance) Catalog(ctx context.Context) ([]dataprovider.TableCatalog, er
 		if err != nil {
 			return nil, err // sqlite_master returned something identRe rejects - shouldn't happen, fail loudly rather than silently skip
 		}
+		// Declared foreign keys, keyed by the source column name - SQLite
+		// reports one row per FK column, which is exactly the shape needed
+		// to look up a given column's target while scanning table_info
+		// below. Only ever populated for a file that actually declares
+		// FOREIGN KEY constraints in its DDL; a file that doesn't leaves
+		// every column's ReferencesTable/ReferencesColumn empty, same as
+		// any other column with no known relation.
+		fkRows, err := i.db.QueryContext(ctx, fmt.Sprintf("PRAGMA foreign_key_list(%s)", quoted))
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: introspecting foreign keys for %q: %w", name, err)
+		}
+		fkTargetTable := map[string]string{}
+		fkTargetColumn := map[string]string{}
+		for fkRows.Next() {
+			var id, seq int
+			var refTable, from, to, onUpdate, onDelete, match string
+			if err := fkRows.Scan(&id, &seq, &refTable, &from, &to, &onUpdate, &onDelete, &match); err != nil {
+				fkRows.Close()
+				return nil, fmt.Errorf("sqlite: scanning foreign key info for %q: %w", name, err)
+			}
+			fkTargetTable[from] = refTable
+			fkTargetColumn[from] = to
+		}
+		if err := fkRows.Err(); err != nil {
+			fkRows.Close()
+			return nil, err
+		}
+		fkRows.Close()
+
 		colRows, err := i.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", quoted))
 		if err != nil {
 			return nil, fmt.Errorf("sqlite: introspecting table %q: %w", name, err)
@@ -160,7 +189,12 @@ func (i *instance) Catalog(ctx context.Context) ([]dataprovider.TableCatalog, er
 				colRows.Close()
 				return nil, fmt.Errorf("sqlite: scanning column info for %q: %w", name, err)
 			}
-			columns = append(columns, dataprovider.ColumnCatalog{Name: colName, Type: colType})
+			columns = append(columns, dataprovider.ColumnCatalog{
+				Name:             colName,
+				Type:             colType,
+				ReferencesTable:  fkTargetTable[colName],
+				ReferencesColumn: fkTargetColumn[colName],
+			})
 		}
 		if err := colRows.Err(); err != nil {
 			colRows.Close()
