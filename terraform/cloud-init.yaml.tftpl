@@ -19,6 +19,7 @@ runcmd:
   - mkdir -p /mnt/val-analyzer-data/pb_data
   - mkdir -p /mnt/val-analyzer-data/polyglot_metadata
   - mkdir -p /mnt/val-analyzer-data/openbao_file
+  - mkdir -p /mnt/val-analyzer-data/caddy_data
   - [ sh, -c, "test -d /opt/val-analyzer/.git && (cd /opt/val-analyzer && git pull) || git clone --branch main https://github.com/Bestor/Polyglot.git /opt/val-analyzer" ]
   - |
     cat > /opt/val-analyzer/.env <<'EOF'
@@ -29,12 +30,25 @@ runcmd:
     ANTHROPIC_MODEL=${anthropic_model}
     SUPERUSER_EMAIL=${superuser_email}
     SUPERUSER_PASSWORD=${superuser_password}
-    COMPOSE_PROFILES=discordbot
+    DOMAIN_NAME=${domain_name}
+    ACME_EMAIL=${acme_email}
+    COMPOSE_PROFILES=discordbot,caddy
     PB_DATA_HOST_PATH=/mnt/val-analyzer-data/pb_data
     PB_METADATA_HOST_PATH=/mnt/val-analyzer-data/polyglot_metadata
     VAULT_DATA_HOST_PATH=/mnt/val-analyzer-data/openbao_file
+    CADDY_DATA_HOST_PATH=/mnt/val-analyzer-data/caddy_data
     DEBUG=false
     EOF
+  # Friend Basic Auth credentials - kept out of the .env heredoc above since
+  # it's a multi-line value (one "name:password" pair per line) that a plain
+  # KEY=VALUE .env parser can't represent safely. chmod 600 immediately -
+  # this is plaintext, if only for the moment before bootstrap-caddy.sh
+  # hashes and deletes it.
+  - |
+    cat > /opt/val-analyzer/caddy/credentials.txt <<'EOF'
+    ${caddy_basicauth_credentials}
+    EOF
+  - chmod 600 /opt/val-analyzer/caddy/credentials.txt
   - [ sh, -c, "cd /opt/val-analyzer && docker compose pull" ]
   # OpenBao has to actually be running before it can be initialized, and
   # polyglot fails fast without a resolvable VAULT_TOKEN/VAULT_UNSEAL_KEY -
@@ -46,4 +60,9 @@ runcmd:
   # script and the root CLAUDE.md's OpenBao section for the full picture.
   - [ sh, -c, "cd /opt/val-analyzer && docker compose up -d openbao" ]
   - [ sh, -c, "chmod +x /opt/val-analyzer/terraform/bootstrap-vault.sh && /opt/val-analyzer/terraform/bootstrap-vault.sh" ]
+  # Turns caddy/credentials.txt into the bcrypt-hashed caddy/users.caddyfile
+  # the caddy service's Caddyfile imports - must run before the final
+  # `docker compose up -d` brings caddy up, same placement pattern as
+  # bootstrap-vault.sh above. See that script's own doc comment.
+  - [ sh, -c, "chmod +x /opt/val-analyzer/terraform/bootstrap-caddy.sh && /opt/val-analyzer/terraform/bootstrap-caddy.sh" ]
   - [ sh, -c, "cd /opt/val-analyzer && docker compose up -d" ]

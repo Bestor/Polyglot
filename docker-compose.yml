@@ -209,6 +209,44 @@ services:
       mcpserver:
         condition: service_started
 
+  # Public entrypoint - the only service in this stack ever reachable from
+  # the internet (see terraform/droplet.tf's firewall, which opens 443 once
+  # this profile is active in production). Reverse-proxies to
+  # webui/mcpserver/jaeger over the internal Compose network by service
+  # name, terminating TLS (Let's Encrypt via TLS-ALPN-01, entirely over 443
+  # - port 80 is never opened or published, see the Caddyfile's
+  # `disable_http_challenge`/`disable_redirects`) and gating every route
+  # behind HTTP Basic Auth so friends (browser) and their own MCP clients
+  # (Authorization header) can reach this droplet without Tailscale. Only
+  # active behind the "caddy" profile - like discordbot, local ./run.sh is
+  # unaffected unless you opt in (see .env.example).
+  caddy:
+    image: caddy:2-alpine
+    container_name: val-analyzer-caddy
+    profiles: ["caddy"]
+    env_file: .env
+    ports:
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Real bcrypt hashes in production, generated at boot by
+      # terraform/bootstrap-caddy.sh from CADDY_BASICAUTH_CREDENTIALS -
+      # gitignored, never committed. Copy caddy/users.caddyfile.example here
+      # for local testing.
+      - ./caddy/users.caddyfile:/etc/caddy/users.caddyfile:ro
+      # Persists Caddy's own cert/OCSP state across a droplet recreate, same
+      # treatment as PB_DATA_HOST_PATH/PB_METADATA_HOST_PATH/
+      # VAULT_DATA_HOST_PATH below - without this, every recreate burns a
+      # fresh Let's Encrypt issuance for no reason.
+      - ${CADDY_DATA_HOST_PATH:-caddy-data}:/data
+    depends_on:
+      webui:
+        condition: service_started
+      mcpserver:
+        condition: service_started
+      jaeger:
+        condition: service_started
+
   # Only starts when the "discordbot" profile is active - set
   # COMPOSE_PROFILES=discordbot in .env once DISCORD_BOT_TOKEN and
   # ANTHROPIC_API_KEY are set, since cmd/discordbot fails fast without them.
@@ -283,3 +321,5 @@ volumes:
     name: val-analyzer-polyglot-metadata
   openbao-data:
     name: val-analyzer-openbao-data
+  caddy-data:
+    name: val-analyzer-caddy-data

@@ -19,6 +19,10 @@ terraform {
       source  = "digitalocean/digitalocean"
       version = "~> 2.0"
     }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5.0"
+    }
   }
 
   backend "s3" {
@@ -41,3 +45,9 @@ terraform {
 # Token read automatically from the DIGITALOCEAN_TOKEN environment variable -
 # no explicit token argument needed (verified against the provider's docs).
 provider "digitalocean" {}
+
+# Manages the DNS records in terraform/dns.tf. Token read automatically from
+# the CLOUDFLARE_API_TOKEN environment variable, same zero-arg pattern as
+# provider "digitalocean" above - scope it to DNS:Edit on just the
+# domain_name zone (see terraform/README.md), never a broader token.
+provider "cloudflare" {}

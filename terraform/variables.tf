@@ -73,3 +73,26 @@ variable "superuser_password" {
   sensitive   = true
   default     = ""
 }
+
+# --- Caddy / public access - see docker-compose.yml's caddy service and the
+# root Caddyfile. Fronts webui/mcpserver/jaeger on 443 behind HTTP Basic
+# Auth; authorization (who can see what) is explicitly out of scope, this is
+# authentication only. ---
+
+variable "domain_name" {
+  description = "Public domain Caddy serves the stack on (webui at the root, mcpserver at mcp.<domain>, Jaeger at traces.<domain>). Not a secret - registered via Cloudflare Registrar, DNS managed by terraform/dns.tf."
+  type        = string
+  default     = "ask-polyglot.com"
+}
+
+variable "acme_email" {
+  description = "Contact address Caddy registers with Let's Encrypt for certificate-problem notifications. Not a secret, never displayed publicly."
+  type        = string
+  default     = "joshdale0@gmail.com"
+}
+
+variable "caddy_basicauth_credentials" {
+  description = "Plaintext friend credentials, one 'name:password' pair per line. Never written to disk as plaintext beyond the droplet's own transient caddy/credentials.txt (deleted immediately after terraform/bootstrap-caddy.sh hashes each line into caddy/users.caddyfile at boot) - see that script and cloud-init.yaml.tftpl."
+  type        = string
+  sensitive   = true
+}

@@ -3,3 +3,5 @@ pb_data/
 /server
 .claude/
 terraform/.terraform/
+caddy/users.caddyfile
+caddy/credentials.txt

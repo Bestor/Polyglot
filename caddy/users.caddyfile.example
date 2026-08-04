@@ -1,0 +1,11 @@
+# Placeholder/documentation only - the real caddy/users.caddyfile (gitignored)
+# is generated automatically in production by terraform/bootstrap-caddy.sh
+# from the CADDY_BASICAUTH_CREDENTIALS GitHub secret (plaintext
+# "name:password" lines, hashed on the droplet at boot - never hand-written).
+#
+# For local testing (COMPOSE_PROFILES=caddy locally), copy this file to
+# caddy/users.caddyfile and add real bcrypt hashes, one "name hash" pair per
+# line, generated via:
+#   docker run --rm caddy:2-alpine caddy hash-password --plaintext 'your-password'
+#
+# name $2a$14$examplehashgoeshere

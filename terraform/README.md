@@ -37,8 +37,18 @@ S3-style keys, not your DigitalOcean account token.
 
 - [ ] DigitalOcean control panel -> **API -> Tokens -> Generate New Token**.
   - Name: something identifiable, e.g. `val-analyzer-ci`
-  - Scope: read + write (Terraform needs to create/update the droplet, volume, firewall, SSH key)
+  - Scope: read + write (Terraform needs to create/update the droplet, volume, firewall, SSH key,
+    reserved IP)
 - [ ] Save the token -> becomes the `DIGITALOCEAN_TOKEN` GitHub secret.
+
+## 3a. Cloudflare API token (for Terraform's `cloudflare` provider - DNS)
+
+Only needed once you're onboarding a real domain (see step 11, "Caddy / public access setup").
+
+- [ ] Cloudflare dashboard -> **My Profile -> API Tokens -> Create Token -> Edit zone DNS template**,
+  scoped to just the `domain_name` zone (`ask-polyglot.com` by default, see
+  `terraform/variables.tf`) - never a broader/account-wide token.
+- [ ] Save the token -> becomes the `CLOUDFLARE_API_TOKEN` GitHub secret.
 
 ## 4. Dedicated SSH keypair for CI deploys
 
@@ -104,6 +114,9 @@ protection on deploys later without touching the workflow.
 - [ ] `SUPERUSER_EMAIL` (optional - leave the GitHub secret unset/empty if you don't want an admin
   superuser auto-provisioned)
 - [ ] `SUPERUSER_PASSWORD` (required if `SUPERUSER_EMAIL` is set, otherwise optional)
+- [ ] `CLOUDFLARE_API_TOKEN` (step 3a)
+- [ ] `CADDY_BASICAUTH_CREDENTIALS` - one `name:password` line per friend, **plaintext** (hashed on
+  the droplet at boot by `terraform/bootstrap-caddy.sh` - see step 11)
 
 Notably absent: no `VAULT_TOKEN`/`VAULT_UNSEAL_KEY` secret to create here. OpenBao's one-time init/
 policy setup is fully automated by `terraform/bootstrap-vault.sh` (see step 9) - those two values
@@ -160,18 +173,53 @@ time it starts, so this is normally invisible. It only becomes visible (and need
 `docker compose exec openbao bao operator unseal <key from vault-init.env>`) if OpenBao is
 restarted *without* polyglot restarting alongside it.
 
-## 10. Verify
+## 10. Caddy / public access setup
+
+Caddy (the `caddy` Compose profile) fronts `webui`/`mcpserver`/Jaeger on 443 behind HTTP Basic
+Auth, so friends can use the site and point their own local Claude Code at `mcpserver` without
+Tailscale - see the root `CLAUDE.md`'s Caddy section for the full picture. **This is fully
+automated**, same treatment as OpenBao above: `terraform/dns.tf` (the `cloudflare` provider)
+creates/keeps the three DNS records pointed at the droplet's stable
+`digitalocean_reserved_ip` in step with every `terraform apply`, and
+`terraform/cloud-init.yaml.tftpl` + `terraform/bootstrap-caddy.sh` hash the plaintext
+`CADDY_BASICAUTH_CREDENTIALS` secret into `caddy/users.caddyfile` on every boot, before `docker
+compose up -d` brings `caddy` up. No by-hand SSH steps beyond the two secrets already covered in
+step 7 (`CLOUDFLARE_API_TOKEN`, `CADDY_BASICAUTH_CREDENTIALS`).
+
+**If it ever doesn't come up clean** (e.g. `caddy` failing to obtain a certificate, or a friend's
+login not working): SSH in and re-run the hashing step by hand - it's idempotent:
+```sh
+cd /opt/val-analyzer && ./terraform/bootstrap-caddy.sh && docker compose up -d caddy
+```
+This regenerates `caddy/users.caddyfile` from whatever's currently in `caddy/credentials.txt` - if
+that file is already gone (the normal case, `bootstrap-caddy.sh` deletes it once it's used), you'll
+need `CADDY_BASICAUTH_CREDENTIALS`'s current value first, e.g. by re-triggering a
+`recreate_droplet: true` deploy instead (see "Forcing a droplet rebuild" below).
+
+**Recurring operational note, not a one-time step**: adding a friend means appending a
+`name:password` line to the `CADDY_BASICAUTH_CREDENTIALS` GitHub secret, then a
+`workflow_dispatch` deploy with `recreate_droplet: true` - `bootstrap-caddy.sh` only runs from
+cloud-init's `runcmd`, which only fires on first boot or an explicit recreate, not on a normal
+`git pull`-triggered deploy. A future hardening could make this re-runnable from the deploy step
+itself; out of scope for now.
+
+## 11. Verify
 
 - [ ] `terraform output droplet_ip` (from the `provision` job's logs, or run locally against the
-  same backend) gives you the droplet's address.
+  same backend) gives you the droplet's stable address (the reserved IP, not whatever the droplet's
+  own transient IP happens to be).
 - [ ] SSH in (`ssh -i val_analyzer_ci_deploy root@<droplet_ip>`) and confirm `docker compose ps`
-  shows all six services up (`valorantapi`, `openbao`, `polyglot`, `mcpserver`, `cachewarmer`, and
-  `discordbot` if the profile is active).
+  shows all seven services up (`valorantapi`, `openbao`, `polyglot`, `mcpserver`, `cachewarmer`,
+  `caddy`, and `discordbot` if the profile is active).
 - [ ] `docker logs val-analyzer-mcpserver` shows tools being registered from `openapi/polyglot.yaml`.
 - [ ] `GET /query?datasource=valorant&sql=SELECT COUNT(*) FROM matches` against `polyglot` (through
   its own bearer token) returns a real count, confirming the `polyglot` -> `openbao` +
   `polyglot` -> `valorantapi` wiring all actually works end to end.
-- [ ] From your own machine, confirm nothing but SSH (22) is reachable on the droplet's public IP.
+- [ ] From your own machine, confirm nothing but SSH (22) and HTTPS (443) is reachable on the
+  droplet's public IP.
+- [ ] `curl -I https://<domain>` (and the `mcp.`/`traces.` subdomains) returns `401` with no
+  credentials, and real content with `-u name:password`. `curl -I http://<domain>` times out /
+  connection-refuses, confirming port 80 is genuinely never open.
 
 ## Forcing a droplet rebuild
 
@@ -181,7 +229,9 @@ in practice despite being schema-`ForceNew` (see `CLAUDE.md`'s Deployment sectio
 droplet actually rebuilt (e.g. right after fixing something in `cloud-init.yaml.tftpl`, or after
 rotating a secret): GitHub repo -> **Actions -> Deploy -> Run workflow**, toggle
 `recreate_droplet` to true, run. The existing `val-analyzer-data` volume (`pb_data`/
-`polyglot_metadata`/`openbao_file` subdirectories) reattaches automatically
-(`prevent_destroy`-protected, per `terraform/volume.tf`), so this never loses cached data - though
-OpenBao does come back up sealed and needs polyglot's own restart (which happens automatically as
-part of the same `docker compose up`) to auto-unseal it again.
+`polyglot_metadata`/`openbao_file`/`caddy_data` subdirectories) reattaches automatically
+(`prevent_destroy`-protected, per `terraform/volume.tf`), so this never loses cached data or forces
+a fresh Let's Encrypt issuance - though OpenBao does come back up sealed and needs polyglot's own
+restart (which happens automatically as part of the same `docker compose up`) to auto-unseal it
+again. The droplet's IP does **not** change across this (`digitalocean_reserved_ip.app` is stable
+independent of the underlying droplet), so DNS and everyone's bookmarked URLs keep working.

@@ -1,0 +1,57 @@
+# Public entrypoint for the whole stack - see docker-compose.yml's caddy
+# service and CLAUDE.md's Caddy section. Only ever runs behind the "caddy"
+# Compose profile (production, and opt-in local testing).
+#
+# auto_https disable_redirects + tls { issuer acme { disable_http_challenge } }
+# below mean Caddy never wants port 80 for anything - not the ACME challenge
+# (TLS-ALPN-01 completes entirely over 443), not an HTTP->HTTPS redirect
+# listener. Verified against the real caddy:2-alpine binary (`caddy
+# validate`) during planning.
+#
+# {$DOMAIN_NAME}/{$ACME_EMAIL} come from the container's own env (env_file:
+# .env in docker-compose.yml) - Caddy substitutes {$VAR} throughout the
+# Caddyfile, including in site addresses.
+{
+	email {$ACME_EMAIL}
+	auto_https disable_redirects
+}
+
+# Data Explorer / Ask UI.
+{$DOMAIN_NAME} {
+	basic_auth {
+		import users.caddyfile
+	}
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+	reverse_proxy webui:3000
+}
+
+# MCP server - point a remote Claude Code config here with an
+# Authorization: Basic <base64(name:password)> header.
+mcp.{$DOMAIN_NAME} {
+	basic_auth {
+		import users.caddyfile
+	}
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+	reverse_proxy mcpserver:8092
+}
+
+# Jaeger trace UI.
+traces.{$DOMAIN_NAME} {
+	basic_auth {
+		import users.caddyfile
+	}
+	tls {
+		issuer acme {
+			disable_http_challenge
+		}
+	}
+	reverse_proxy jaeger:16686
+}

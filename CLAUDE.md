@@ -141,13 +141,15 @@ DigitalOcean Space (`terraform/main.tf`'s `s3` backend block, pointed at a DO Sp
 rather than Terraform Cloud - one provider to manage - with `use_lockfile = true` for real state
 locking (no DynamoDB-equivalent needed). `volume.tf`'s `digitalocean_volume` is a separate,
 `prevent_destroy`-protected resource specifically so the cache - the whole point of this project's
-design - survives even a real droplet recreate; it now backs three subdirectories, not one:
+design - survives even a real droplet recreate; it now backs four subdirectories, not one:
 `pb_data` (valorantapi's Valorant cache - same name/path from before the two-binary split, so a
 cutover just retargets the existing volume to a different service, zero backfill),
-`polyglot_metadata` (polyglot's own, separate, always-fresh onboarding/catalog database), and
-`openbao_file` (OpenBao's file storage backend). `docker-compose.yml`'s services point their
-respective volumes at those subdirectories in production via `PB_DATA_HOST_PATH`/
-`PB_METADATA_HOST_PATH`/`VAULT_DATA_HOST_PATH` (all unset locally, so local dev is unaffected).
+`polyglot_metadata` (polyglot's own, separate, always-fresh onboarding/catalog database),
+`openbao_file` (OpenBao's file storage backend), and `caddy_data` (Caddy's own TLS cert/OCSP state,
+so a recreate doesn't burn a fresh Let's Encrypt issuance). `docker-compose.yml`'s services point
+their respective volumes at those subdirectories in production via `PB_DATA_HOST_PATH`/
+`PB_METADATA_HOST_PATH`/`VAULT_DATA_HOST_PATH`/`CADDY_DATA_HOST_PATH` (all unset locally, so local
+dev is unaffected).
 
 **OpenBao's one-time init/policy setup is fully automated, not a by-hand step** -
 `terraform/cloud-init.yaml.tftpl` brings OpenBao up alone first (before the rest of the stack), then
@@ -193,10 +195,35 @@ need to compile 5 Go binaries on it). The GHCR package is public (the image only
 compiled binaries/`openapi/`/the secret-free `players.txt` - never a secret), so the pull needs no
 registry auth on the droplet side.
 
-Nothing besides SSH (22) is reachable on the droplet's public IP (`terraform/droplet.tf`'s
-`digitalocean_firewall`) - every internal service (`valorantapi`, `openbao`, `polyglot`, `mcpserver`)
-is only ever reached over the internal Compose network by another service, and `discordbot` itself
-only makes outbound connections, so none of this stack needs to be internet-facing.
+Nothing besides SSH (22) and HTTPS (443) is reachable on the droplet's public IP
+(`terraform/droplet.tf`'s `digitalocean_firewall`) - every internal service (`valorantapi`,
+`openbao`, `polyglot`, `mcpserver`) is only ever reached over the internal Compose network by
+another service, `discordbot` itself only makes outbound connections, and 443 reaches nothing but
+`caddy` (see below) - so none of the rest of this stack needs to be internet-facing.
+
+**`caddy` (the `caddy` Compose profile) is the one public entrypoint** - it fronts `webui` (the
+root domain), `mcpserver` (`mcp.<domain>`, so a friend's own local Claude Code can connect
+remotely), and Jaeger (`traces.<domain>`) on 443, so friends can use the Data Explorer/Ask UI and
+their own MCP clients without installing Tailscale. Everything is authentication only, no
+authorization - every route sits behind the same HTTP Basic Auth credential list (the root
+`Caddyfile`'s `basic_auth { import users.caddyfile }`), a deliberate scope call matching this
+project's current single-tier trust model (see the design discussion that led here; a
+Trino+OPA-style per-table/per-row authorization layer was explicitly judged too heavy for a
+personal-scale deployment). `caddy/users.caddyfile` (bcrypt hashes) is never hand-written or
+committed - `terraform/bootstrap-caddy.sh` generates it at boot from the plaintext
+`CADDY_BASICAUTH_CREDENTIALS` GitHub secret (`name:password` lines), mirroring
+`bootstrap-vault.sh`'s own precedent of doing real setup work from cloud-init's `runcmd` rather than
+a by-hand SSH step; the intermediate plaintext file is deleted immediately after hashing, since
+(unlike OpenBao's one-time, irreversible init) it's trivially re-derivable from the secret on every
+recreate. TLS is Let's Encrypt via **TLS-ALPN-01 only** (`tls { issuer acme {
+disable_http_challenge } }`, plus `auto_https disable_redirects`) - deliberately so Caddy never
+wants port 80 for anything, matching the firewall only ever opening 443. DNS
+(`terraform/dns.tf`, the `cloudflare` provider, DNS-only/"grey cloud" - Caddy owns its own TLS
+directly rather than trusting Cloudflare's proxy as a second terminating hop) and the droplet's
+public IP (`digitalocean_reserved_ip.app` in `terraform/droplet.tf`, not the droplet's own
+transient address) are both Terraform-managed specifically so a `recreate_droplet: true` deploy -
+already a fact of life for any `cloud-init.yaml.tftpl` change or secret rotation, see below - never
+silently breaks DNS or burns a fresh certificate.
 
 ## Architecture
 
