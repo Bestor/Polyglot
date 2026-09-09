@@ -195,6 +195,21 @@ services:
       # PocketBase never holds Valorant's domain data, only its own
       # datasources/tables/columns bookkeeping.
       - ${PB_METADATA_HOST_PATH:-polyglot-metadata}:/app/pb_data
+    # Without this, webui/mcpserver below can only depend on
+    # condition: service_started, which fires the instant this container's
+    # process starts - not once its OnServe hook (vault unseal + two
+    # synchronous onboarding round trips, one per Data API) actually
+    # finishes and the HTTP listener opens. Observed in production as
+    # webui's polyglotFetch throwing a raw "fetch failed" (connection
+    # refused) on the first request after a fresh boot - the exact race
+    # valorantapi/chesscomapi's own healthchecks below already guard
+    # against, just never extended to polyglot itself until now.
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8091/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
 
   mcpserver:
     build: .
@@ -217,7 +232,7 @@ services:
       - "8092:8092"
     depends_on:
       polyglot:
-        condition: service_started
+        condition: service_healthy
       jaeger:
         condition: service_started
 
@@ -249,7 +264,7 @@ services:
       - "3000:3000"
     depends_on:
       polyglot:
-        condition: service_started
+        condition: service_healthy
       mcpserver:
         condition: service_started
 
