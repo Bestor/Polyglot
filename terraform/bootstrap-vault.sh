@@ -52,7 +52,16 @@ path "secret/data/datasources/*" { capabilities = ["create", "read", "update", "
 path "secret/metadata/datasources/*" { capabilities = ["read", "delete", "list"] }
 POLICY' >/dev/null
 
-  SCOPED_TOKEN=$(docker compose exec -T -e BAO_TOKEN="$ROOT_TOKEN" openbao bao token create -policy=polyglot -field=token)
+  # -orphan (independent of the transient root token's own lease) and a
+  # 10-year -ttl: internal/vault never renews this token (no renew-self
+  # call anywhere in that package), so whatever TTL it's created with is a
+  # hard, non-extending ceiling - the default TTL (OpenBao's system max,
+  # commonly 32 days) silently expired in production well before anyone
+  # noticed, since polyglot only actually calls vault at boot
+  # (Rehydrate/onboard), not during steady-state request serving. A token
+  # that outlives this project by design, rather than "renew it properly"
+  # machinery neither this script nor internal/vault has any of.
+  SCOPED_TOKEN=$(docker compose exec -T -e BAO_TOKEN="$ROOT_TOKEN" openbao bao token create -orphan -ttl=87600h -policy=polyglot -field=token)
 
   cat > "$INIT_FILE" <<EOF
 VAULT_TOKEN=$SCOPED_TOKEN
