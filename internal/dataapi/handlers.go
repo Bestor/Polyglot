@@ -1,4 +1,4 @@
-package main
+package dataapi
 
 import (
 	"context"
@@ -13,16 +13,15 @@ import (
 
 	"val-analyzer/internal/ai"
 	"val-analyzer/internal/jobstore"
-	"val-analyzer/internal/valorant"
 )
 
-// handleQuery implements GET /query: run a caller-supplied read-only ANSI
+// HandleQuery implements GET /query: run a caller-supplied read-only ANSI
 // SQL statement against this binary's own PocketBase data and return the
 // raw ai.QueryResult shape. This is a machine-to-machine contract consumed
 // by core polyglot's internal/providers/httpsql, not by mcpserver/
 // discordbot directly - so unlike core polyglot's own /query, there's no
 // row-object reshaping here, just ai.QueryResult's own columnar JSON.
-func handleQuery(query ai.QueryFunc) func(e *core.RequestEvent) error {
+func HandleQuery(query ai.QueryFunc) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		sqlText := e.Request.URL.Query().Get("sql")
 		if sqlText == "" {
@@ -64,22 +63,20 @@ type schemaResponse struct {
 }
 
 // reservedCollectionNames mirrors internal/polyglot's own reservedNames -
-// core polyglot's onboarding/catalog bookkeeping collections. This
-// binary's own migration set (internal/valorant/migrations) never creates
-// them, but a data directory that started life as the old, pre-split
-// combined single-binary polyglot database can still physically contain
-// them as leftover collections; excluding them here keeps /schema (and
-// thus core polyglot's httpsql catalog reconciliation) reporting only
-// real Valorant domain tables regardless of a data directory's history.
+// core polyglot's onboarding/catalog bookkeeping collections. A standalone
+// Data API's own migration set never creates them, but a data directory
+// that started life as something else can still physically contain them as
+// leftover collections; excluding them here keeps /schema (and thus core
+// polyglot's httpsql catalog reconciliation) reporting only real domain
+// tables regardless of a data directory's history.
 var reservedCollectionNames = map[string]bool{"datasources": true, "tables": true, "columns": true}
 
-// handleSchema implements GET /schema: introspects this binary's own live
-// PocketBase collections (the 15 Valorant domain tables created by
-// internal/valorant/migrations). This is what core polyglot's
-// httpsql.Instance.Catalog calls to build its tables/columns catalog -
-// curated descriptions live entirely on the core polyglot side, so this is
-// structure only, no Description text.
-func handleSchema(app core.App) func(e *core.RequestEvent) error {
+// HandleSchema implements GET /schema: introspects this binary's own live
+// PocketBase collections (the domain tables its own migrations created).
+// This is what core polyglot's httpsql.Instance.Catalog calls to build its
+// tables/columns catalog - curated descriptions live entirely on the core
+// polyglot side, so this is structure only, no Description text.
+func HandleSchema(app core.App) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		collections, err := app.FindAllCollections(core.CollectionTypeBase)
 		if err != nil {
@@ -88,8 +85,8 @@ func handleSchema(app core.App) func(e *core.RequestEvent) error {
 
 		// Built once so relation resolution below is a map lookup, not an
 		// extra query per relation field - every valid relation target is
-		// already in this same collections slice, since Valorant's domain
-		// tables only ever relate to other Valorant domain tables.
+		// already in this same collections slice, since a domain's own
+		// tables only ever relate to other tables in that same domain.
 		nameByCollectionID := make(map[string]string, len(collections))
 		for _, col := range collections {
 			nameByCollectionID[col.Id] = col.Name
@@ -101,8 +98,8 @@ func handleSchema(app core.App) func(e *core.RequestEvent) error {
 			// PocketBase's own system collections - several of them
 			// (_mfas, _otps, _externalAuths, ...) are "base" type too,
 			// not "auth". PocketBase's own convention is a leading
-			// underscore for every system collection; none of Valorant's
-			// real domain tables are named that way.
+			// underscore for every system collection; none of a domain's
+			// real tables are named that way.
 			if strings.HasPrefix(col.Name, "_") || reservedCollectionNames[col.Name] {
 				continue
 			}
@@ -141,10 +138,10 @@ type functionsResponse struct {
 	Functions []functionResponse `json:"functions"`
 }
 
-// buildFunctionsResponse maps valorant.Functions() to a pure, JSON-ready
-// shape (no Run field, which isn't serializable) - factored out of
-// handleFunctions so it's unit-testable without a core.RequestEvent.
-func buildFunctionsResponse(functions []valorant.Function) functionsResponse {
+// BuildFunctionsResponse maps a Function list to a pure, JSON-ready shape
+// (no Run field, which isn't serializable) - factored out of HandleFunctions
+// so it's unit-testable without a core.RequestEvent.
+func BuildFunctionsResponse(functions []Function) functionsResponse {
 	resp := functionsResponse{Functions: make([]functionResponse, 0, len(functions))}
 	for _, f := range functions {
 		args := make([]functionArgResponse, 0, len(f.Args))
@@ -156,12 +153,12 @@ func buildFunctionsResponse(functions []valorant.Function) functionsResponse {
 	return resp
 }
 
-// handleFunctions implements GET /functions: lists every Function's
+// HandleFunctions implements GET /functions: lists every Function's
 // Name/Description/Args - what core polyglot's httpsql.Instance.Functions
-// calls to build its own functions catalog, mirroring handleSchema/Catalog.
-func handleFunctions(functions []valorant.Function) func(e *core.RequestEvent) error {
+// calls to build its own functions catalog, mirroring HandleSchema/Catalog.
+func HandleFunctions(functions []Function) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
-		return e.JSON(http.StatusOK, buildFunctionsResponse(functions))
+		return e.JSON(http.StatusOK, BuildFunctionsResponse(functions))
 	}
 }
 
@@ -171,26 +168,28 @@ type warmRequest struct {
 }
 
 // warmJobTimeout bounds how long a single background Function.Run may
-// take before it's forcibly canceled. Generous because sync_matches's
-// full_history option can page up to the upstream API's actual history -
-// a prolific player's entire history can take a long time under upstream
-// rate-limit backoff, and since /warm is async this doesn't block anything
-// else while it runs.
+// take before it's forcibly canceled. Generous because a full-history sync
+// option can page through an upstream API's actual history - a prolific
+// player's entire history can take a long time under upstream rate-limit
+// backoff, and since /warm is async this doesn't block anything else while
+// it runs.
 const warmJobTimeout = 2 * time.Hour
 
-// handleWarm implements POST /warm: look up the named Function, validate
+// HandleWarm implements POST /warm: look up the named Function, validate
 // its required args are present (synchronously - an unknown function or a
 // missing required arg is still an immediate 400, no job created), then
 // run it in the background and return 202 with a job to poll via
-// GET /warm?id=.
-func handleWarm(functions []valorant.Function, jobs *jobstore.Store) func(e *core.RequestEvent) error {
+// GET /warm?id=. sourceName identifies the calling binary's domain (e.g.
+// "valorant"/"chesscom") purely for job-tracking/log-line labeling - this
+// package itself has no notion of any particular domain.
+func HandleWarm(sourceName string, functions []Function, jobs *jobstore.Store) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		var req warmRequest
 		if err := e.BindBody(&req); err != nil {
 			return e.BadRequestError("invalid request body", err)
 		}
 
-		var fn valorant.Function
+		var fn Function
 		var found bool
 		for _, f := range functions {
 			if f.Name == req.Function {
@@ -199,7 +198,7 @@ func handleWarm(functions []valorant.Function, jobs *jobstore.Store) func(e *cor
 			}
 		}
 		if !found {
-			slog.Warn("valorantapi: warm called with unknown function", "function", req.Function)
+			slog.Warn("dataapi: warm called with unknown function", "source", sourceName, "function", req.Function)
 			return e.BadRequestError(fmt.Sprintf("unknown function %q", req.Function), nil)
 		}
 
@@ -207,11 +206,11 @@ func handleWarm(functions []valorant.Function, jobs *jobstore.Store) func(e *cor
 			return e.BadRequestError(err.Error(), nil)
 		}
 
-		job := jobs.Create("valorant", req.Function)
-		slog.Info("valorantapi: warm started", "job_id", job.ID, "function", req.Function)
-		slog.Debug("valorantapi: warm args", "job_id", job.ID, "args", req.Args)
+		job := jobs.Create(sourceName, req.Function)
+		slog.Info("dataapi: warm started", "source", sourceName, "job_id", job.ID, "function", req.Function)
+		slog.Debug("dataapi: warm args", "source", sourceName, "job_id", job.ID, "args", req.Args)
 
-		go runWarmJob(jobs, job.ID, fn, req.Args)
+		go runWarmJob(jobs, sourceName, job.ID, fn, req.Args)
 
 		return e.JSON(http.StatusAccepted, job)
 	}
@@ -219,29 +218,29 @@ func handleWarm(functions []valorant.Function, jobs *jobstore.Store) func(e *cor
 
 // runWarmJob runs fn in the background and records its outcome in jobs.
 // Deliberately derived from context.Background(), not the originating
-// e.Request.Context() - that context is canceled the instant handleWarm
+// e.Request.Context() - that context is canceled the instant HandleWarm
 // returns, which would kill the work before it had a chance to run.
-func runWarmJob(jobs *jobstore.Store, id string, fn valorant.Function, args map[string]any) {
+func runWarmJob(jobs *jobstore.Store, sourceName, id string, fn Function, args map[string]any) {
 	ctx, cancel := context.WithTimeout(context.Background(), warmJobTimeout)
 	defer cancel()
 
 	start := time.Now()
 	outcome, err := fn.Run(ctx, args)
 	if err != nil {
-		slog.Error("valorantapi: warm failed", "job_id", id, "function", fn.Name,
+		slog.Error("dataapi: warm failed", "source", sourceName, "job_id", id, "function", fn.Name,
 			"error", err, "duration_ms", time.Since(start).Milliseconds())
 		jobs.Fail(id, err.Error())
 		return
 	}
 
-	slog.Info("valorantapi: warm complete", "job_id", id, "function", fn.Name,
+	slog.Info("dataapi: warm complete", "source", sourceName, "job_id", id, "function", fn.Name,
 		"summary", outcome.Summary, "duration_ms", time.Since(start).Milliseconds())
 	jobs.Complete(id, outcome.Summary, outcome.Data)
 }
 
-// handleWarmStatus implements GET /warm?id=: report a previously started
+// HandleWarmStatus implements GET /warm?id=: report a previously started
 // job's current status/result.
-func handleWarmStatus(jobs *jobstore.Store) func(e *core.RequestEvent) error {
+func HandleWarmStatus(jobs *jobstore.Store) func(e *core.RequestEvent) error {
 	return func(e *core.RequestEvent) error {
 		id := e.Request.URL.Query().Get("id")
 		if id == "" {
@@ -259,7 +258,7 @@ func handleWarmStatus(jobs *jobstore.Store) func(e *core.RequestEvent) error {
 
 // requireArgs checks that every required arg (per the function's own
 // declared args) is present in the caller-supplied args.
-func requireArgs(declared []valorant.FunctionArg, provided map[string]any) error {
+func requireArgs(declared []FunctionArg, provided map[string]any) error {
 	for _, arg := range declared {
 		if !arg.Required {
 			continue

@@ -7,39 +7,20 @@ import (
 	"strings"
 	"time"
 
+	"val-analyzer/internal/dataapi"
 	"val-analyzer/internal/valorant/ingest"
 )
 
-// FunctionArg documents one argument a Function's Run accepts. A local
-// type, not dataprovider.FunctionArg - this binary no longer implements
-// dataprovider.Provider (see cmd/valorantapi), it just needs a small,
-// self-describing shape for its own /warm handler.
-type FunctionArg struct {
-	Name        string
-	Type        string // a JSON-schema type, e.g. "string" | "integer" | "boolean"
-	Description string
-	Required    bool
-}
-
-// FunctionOutcome reports what a Function's Run call actually did, in a
-// form suitable for feeding back to the caller (and logging).
-type FunctionOutcome struct {
-	Summary string
-	Data    map[string]any
-}
-
-// FunctionRun runs one named data-fill action, using args the caller
-// supplied (matching that Function's declared Args).
-type FunctionRun func(ctx context.Context, args map[string]any) (FunctionOutcome, error)
-
-// Function is a named, generically-invokable data-fill action, callable via
-// POST /warm and self-described via GET /warm's function listing.
-type Function struct {
-	Name        string
-	Description string
-	Args        []FunctionArg
-	Run         FunctionRun
-}
+// Function/FunctionArg/FunctionOutcome/FunctionRun are the shared
+// internal/dataapi shapes, aliased here so the rest of this file (and
+// cmd/valorantapi) can keep referring to them by their familiar,
+// Valorant-scoped names without every callsite importing dataapi directly.
+type (
+	FunctionArg     = dataapi.FunctionArg
+	FunctionOutcome = dataapi.FunctionOutcome
+	FunctionRun     = dataapi.FunctionRun
+	Function        = dataapi.Function
+)
 
 // maxSyncMatchesPerCall bounds how many matches a single sync_matches call
 // will fetch/save, so a request can never block unboundedly under the

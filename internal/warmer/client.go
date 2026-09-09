@@ -1,4 +1,10 @@
-package cachewarmer
+// Package warmer implements the proactive-warming binaries' shared logic:
+// periodically calling a standalone Data API's POST /warm for every
+// identifier listed in a file, so caches stay fresh without waiting on a
+// live question to trigger a sync. Domain-agnostic - which function to
+// call and what arg shape an identifier maps to is supplied by the caller
+// (cmd/cachewarmer, cmd/chesscomwarmer, ...), not this package.
+package warmer
 
 import (
 	"bytes"
@@ -11,7 +17,7 @@ import (
 	"time"
 )
 
-// Client calls polyglot's POST /warm, using the same static bearer-token
+// Client calls a Data API's POST /warm, using the same static bearer-token
 // scheme as internal/mcpserver's Client.
 type Client struct {
 	baseURL   string
@@ -36,17 +42,12 @@ type warmJob struct {
 	ID string `json:"id"`
 }
 
-// Warm calls POST /warm (against cmd/valorantapi - the only service with
-// a /warm endpoint now, see internal/polyglot/routes.go's doc comment) and
-// returns the started job's id. It does not wait for the job to finish -
-// /warm is already async, and cachewarmer's whole point is to
-// fire-and-forget across a player list, not block on any one player's
-// sync.
-func (c *Client) Warm(ctx context.Context, function, playerTag string) (string, error) {
-	body, err := json.Marshal(warmRequest{
-		Function: function,
-		Args:     map[string]any{"player_tag": playerTag},
-	})
+// Warm calls POST /warm and returns the started job's id. It does not wait
+// for the job to finish - /warm is already async, and the whole point of a
+// warmer binary is to fire-and-forget across a watchlist, not block on any
+// one identifier's sync.
+func (c *Client) Warm(ctx context.Context, function string, args map[string]any) (string, error) {
+	body, err := json.Marshal(warmRequest{Function: function, Args: args})
 	if err != nil {
 		return "", fmt.Errorf("encoding request: %w", err)
 	}
@@ -60,7 +61,7 @@ func (c *Client) Warm(ctx context.Context, function, playerTag string) (string, 
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("calling polyglot: %w", err)
+		return "", fmt.Errorf("calling data api: %w", err)
 	}
 	defer resp.Body.Close()
 

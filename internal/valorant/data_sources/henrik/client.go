@@ -4,44 +4,26 @@ package henrik
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"log/slog"
-	"net/http"
 	"net/url"
-	"strconv"
 	"time"
 
 	"val-analyzer/internal/ratelimit"
+	"val-analyzer/internal/upstreamhttp"
 	"val-analyzer/internal/valorant/data_sources"
 )
 
-// Rate-limit retry tuning: the local token-bucket limiter (ratelimit.Limiter)
-// already throttles the steady-state request rate, but a burst of matches
-// within a single sync can still occasionally exceed HenrikDev's actual
-// enforcement. Rather than failing the whole sync on one 429, pause and
-// retry the single request - honoring a Retry-After header when the API
-// sends one, falling back to exponential backoff otherwise.
-const (
-	maxRateLimitRetries  = 5
-	rateLimitBackoffBase = 2 * time.Second
-	rateLimitBackoffCap  = 60 * time.Second
-)
-
 type Client struct {
-	http    *http.Client
+	fetch   *upstreamhttp.Client
 	baseURL string
 	apiKey  string
-	limiter *ratelimit.Limiter
 }
 
 func NewClient(baseURL, apiKey string, limiter *ratelimit.Limiter) *Client {
 	return &Client{
-		http:    &http.Client{Timeout: 15 * time.Second},
+		fetch:   upstreamhttp.NewClient("henrik", limiter, 15*time.Second),
 		baseURL: baseURL,
 		apiKey:  apiKey,
-		limiter: limiter,
 	}
 }
 
@@ -346,95 +328,18 @@ func (c *Client) doGet(ctx context.Context, path string, query url.Values, out a
 
 // doGetRaw performs the request and also returns the raw response body, so
 // callers that want to persist the full payload (e.g. matches.raw_json) can
-// do so without a second round trip. A 429 response is retried in place
-// (up to maxRateLimitRetries times) rather than immediately failing the
-// call - see the rate-limit retry tuning comment above.
+// do so without a second round trip. Rate-limiting, 429 retry/backoff, and
+// error-status mapping all live in internal/upstreamhttp - this is just
+// HenrikDev's own URL/auth-header shape on top of that shared mechanism.
 func (c *Client) doGetRaw(ctx context.Context, path string, query url.Values, out any) ([]byte, error) {
 	u := c.baseURL + path
 	if len(query) > 0 {
 		u += "?" + query.Encode()
 	}
 
-	for attempt := 0; ; attempt++ {
-		if err := c.limiter.Wait(ctx); err != nil {
-			return nil, err
-		}
-
-		start := time.Now()
-		slog.Info("henrik: request", "path", path, "query", query.Encode())
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("Authorization", c.apiKey)
-		req.Header.Set("Accept", "application/json")
-
-		resp, err := c.http.Do(req)
-		if err != nil {
-			slog.Error("henrik: request failed", "path", path, "error", err, "duration_ms", time.Since(start).Milliseconds())
-			return nil, err
-		}
-
-		body, readErr := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if readErr != nil {
-			slog.Error("henrik: reading response body failed", "path", path, "error", readErr, "duration_ms", time.Since(start).Milliseconds())
-			return nil, readErr
-		}
-
-		duration := time.Since(start)
-
-		if resp.StatusCode == http.StatusTooManyRequests && attempt < maxRateLimitRetries {
-			wait := retryAfterDuration(resp.Header, attempt)
-			slog.Warn("henrik: rate limited, pausing before retry", "path", path, "wait", wait, "attempt", attempt+1, "duration_ms", duration.Milliseconds())
-			select {
-			case <-time.After(wait):
-				continue
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-
-		if resp.StatusCode >= 400 {
-			slog.Warn("henrik: request returned error status", "path", path, "status", resp.StatusCode, "duration_ms", duration.Milliseconds())
-			return nil, &APIError{StatusCode: resp.StatusCode, Message: string(body)}
-		}
-
-		slog.Info("henrik: request complete", "path", path, "status", resp.StatusCode, "bytes", len(body), "duration_ms", duration.Milliseconds())
-
-		if out != nil {
-			if err := json.Unmarshal(body, out); err != nil {
-				return nil, fmt.Errorf("decoding henrikdev response: %w", err)
-			}
-		}
-
-		return body, nil
+	headers := map[string]string{
+		"Authorization": c.apiKey,
+		"Accept":        "application/json",
 	}
-}
-
-// retryAfterDuration decides how long to pause before retrying a 429,
-// honoring a Retry-After header (seconds or an HTTP date) when present and
-// falling back to exponential backoff based on attempt otherwise. Always
-// capped at rateLimitBackoffCap.
-func retryAfterDuration(header http.Header, attempt int) time.Duration {
-	if v := header.Get("Retry-After"); v != "" {
-		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
-			return capDuration(time.Duration(secs) * time.Second)
-		}
-		if t, err := http.ParseTime(v); err == nil {
-			if d := time.Until(t); d > 0 {
-				return capDuration(d)
-			}
-		}
-	}
-
-	return capDuration(rateLimitBackoffBase * time.Duration(1<<attempt))
-}
-
-func capDuration(d time.Duration) time.Duration {
-	if d > rateLimitBackoffCap {
-		return rateLimitBackoffCap
-	}
-	return d
+	return c.fetch.Get(ctx, u, headers, out)
 }

@@ -1,4 +1,4 @@
-package main
+package dataapi
 
 import (
 	"context"
@@ -10,9 +10,6 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tests"
 	"github.com/pocketbase/pocketbase/tools/router"
-
-	"val-analyzer/internal/valorant"
-	_ "val-analyzer/internal/valorant/migrations"
 )
 
 func newTestApp(t *testing.T) core.App {
@@ -29,16 +26,16 @@ func newTestApp(t *testing.T) core.App {
 }
 
 func TestBuildFunctionsResponse(t *testing.T) {
-	functions := []valorant.Function{
+	functions := []Function{
 		{
 			Name:        "sync_matches",
 			Description: "Fetch and cache a player's matches.",
-			Args: []valorant.FunctionArg{
+			Args: []FunctionArg{
 				{Name: "player_tag", Type: "string", Description: "The player's Riot ID.", Required: true},
 				{Name: "count", Type: "integer", Description: "How many matches.", Required: false},
 			},
-			Run: func(ctx context.Context, args map[string]any) (valorant.FunctionOutcome, error) {
-				return valorant.FunctionOutcome{}, nil
+			Run: func(ctx context.Context, args map[string]any) (FunctionOutcome, error) {
+				return FunctionOutcome{}, nil
 			},
 		},
 		{
@@ -47,7 +44,7 @@ func TestBuildFunctionsResponse(t *testing.T) {
 		},
 	}
 
-	resp := buildFunctionsResponse(functions)
+	resp := BuildFunctionsResponse(functions)
 
 	if len(resp.Functions) != 2 {
 		t.Fatalf("expected 2 functions, got %d", len(resp.Functions))
@@ -73,23 +70,38 @@ func TestBuildFunctionsResponse(t *testing.T) {
 	}
 }
 
-// TestHandleSchema_DetectsRelations proves handleSchema resolves a real
+// TestHandleSchema_DetectsRelations proves HandleSchema resolves a real
 // PocketBase *core.RelationField's CollectionId into the target table's
 // name - the mechanical foreign-key-detection path core polyglot's
 // httpsql provider relies on (see internal/providers/httpsql, which
 // decodes this response directly into dataprovider.TableCatalog with no
-// reshaping). match_players.player is a real relation to players in
-// internal/valorant/migrations, not a fake - this is the same relation an
-// AI conversation once hallucinated a wrong join column for.
+// reshaping). Builds its own minimal two-collection fixture directly
+// (rather than depending on any domain's migrations) since this package
+// has no domain of its own to borrow one from.
 func TestHandleSchema_DetectsRelations(t *testing.T) {
 	app := newTestApp(t)
+
+	owners := core.NewBaseCollection("owners")
+	owners.Fields.Add(&core.TextField{Name: "name"})
+	if err := app.Save(owners); err != nil {
+		t.Fatalf("saving owners collection: %v", err)
+	}
+
+	widgets := core.NewBaseCollection("widgets")
+	widgets.Fields.Add(
+		&core.RelationField{Name: "owner", CollectionId: owners.Id},
+		&core.TextField{Name: "label"},
+	)
+	if err := app.Save(widgets); err != nil {
+		t.Fatalf("saving widgets collection: %v", err)
+	}
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/schema", nil)
 	e := &core.RequestEvent{App: app, Event: router.Event{Response: rec, Request: req}}
 
-	if err := handleSchema(app)(e); err != nil {
-		t.Fatalf("handleSchema: %v", err)
+	if err := HandleSchema(app)(e); err != nil {
+		t.Fatalf("HandleSchema: %v", err)
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -100,44 +112,44 @@ func TestHandleSchema_DetectsRelations(t *testing.T) {
 		t.Fatalf("decoding response: %v", err)
 	}
 
-	var matchPlayers *schemaTable
+	var widgetsTable *schemaTable
 	for i := range resp.Tables {
-		if resp.Tables[i].Name == "match_players" {
-			matchPlayers = &resp.Tables[i]
+		if resp.Tables[i].Name == "widgets" {
+			widgetsTable = &resp.Tables[i]
 		}
 	}
-	if matchPlayers == nil {
-		t.Fatal("match_players table missing from schema")
+	if widgetsTable == nil {
+		t.Fatal("widgets table missing from schema")
 	}
 
-	var player *schemaColumn
-	for i := range matchPlayers.Columns {
-		if matchPlayers.Columns[i].Name == "player" {
-			player = &matchPlayers.Columns[i]
+	var owner *schemaColumn
+	for i := range widgetsTable.Columns {
+		if widgetsTable.Columns[i].Name == "owner" {
+			owner = &widgetsTable.Columns[i]
 		}
 	}
-	if player == nil {
-		t.Fatal("player column missing from match_players")
+	if owner == nil {
+		t.Fatal("owner column missing from widgets")
 	}
-	if player.ReferencesTable != "players" {
-		t.Errorf("references_table = %q, want %q", player.ReferencesTable, "players")
+	if owner.ReferencesTable != "owners" {
+		t.Errorf("references_table = %q, want %q", owner.ReferencesTable, "owners")
 	}
-	if player.ReferencesColumn != "id" {
-		t.Errorf("references_column = %q, want %q", player.ReferencesColumn, "id")
+	if owner.ReferencesColumn != "id" {
+		t.Errorf("references_column = %q, want %q", owner.ReferencesColumn, "id")
 	}
 
 	// A plain, non-relation column must not get a relation.
-	var matchId *schemaColumn
-	for i := range matchPlayers.Columns {
-		if matchPlayers.Columns[i].Name == "party_id" {
-			matchId = &matchPlayers.Columns[i]
+	var label *schemaColumn
+	for i := range widgetsTable.Columns {
+		if widgetsTable.Columns[i].Name == "label" {
+			label = &widgetsTable.Columns[i]
 		}
 	}
-	if matchId == nil {
-		t.Fatal("party_id column missing from match_players")
+	if label == nil {
+		t.Fatal("label column missing from widgets")
 	}
-	if matchId.ReferencesTable != "" || matchId.ReferencesColumn != "" {
+	if label.ReferencesTable != "" || label.ReferencesColumn != "" {
 		t.Errorf("expected no relation on a plain text column, got references_table=%q references_column=%q",
-			matchId.ReferencesTable, matchId.ReferencesColumn)
+			label.ReferencesTable, label.ReferencesColumn)
 	}
 }

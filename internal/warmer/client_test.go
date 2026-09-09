@@ -1,4 +1,4 @@
-package cachewarmer
+package warmer
 
 import (
 	"context"
@@ -25,7 +25,7 @@ func TestClient_Warm(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient(srv.URL, "secret-token")
-	jobID, err := client.Warm(context.Background(), "sync_matches", "OrBest#NA1")
+	jobID, err := client.Warm(context.Background(), "sync_matches", map[string]any{"player_tag": "OrBest#NA1"})
 	if err != nil {
 		t.Fatalf("Warm: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestClient_Warm_NonAcceptedStatus(t *testing.T) {
 	defer srv.Close()
 
 	client := NewClient(srv.URL, "secret-token")
-	if _, err := client.Warm(context.Background(), "bogus", "OrBest#NA1"); err == nil {
+	if _, err := client.Warm(context.Background(), "bogus", map[string]any{"player_tag": "OrBest#NA1"}); err == nil {
 		t.Error("expected an error for a non-202 status")
 	}
 }

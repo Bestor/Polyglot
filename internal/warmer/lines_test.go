@@ -1,4 +1,4 @@
-package cachewarmer
+package warmer
 
 import (
 	"os"
@@ -7,17 +7,17 @@ import (
 	"testing"
 )
 
-func TestReadPlayerTags(t *testing.T) {
+func TestReadLines(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "players.txt")
+	path := filepath.Join(dir, "watchlist.txt")
 	content := "# a comment\n\nOrBest#NA1\n  \n# another comment\ngoatninja01#NA1\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	got, err := ReadPlayerTags(path)
+	got, err := ReadLines(path)
 	if err != nil {
-		t.Fatalf("ReadPlayerTags: %v", err)
+		t.Fatalf("ReadLines: %v", err)
 	}
 
 	want := []string{"OrBest#NA1", "goatninja01#NA1"}
@@ -26,8 +26,8 @@ func TestReadPlayerTags(t *testing.T) {
 	}
 }
 
-func TestReadPlayerTags_MissingFile(t *testing.T) {
-	got, err := ReadPlayerTags(filepath.Join(t.TempDir(), "does-not-exist.txt"))
+func TestReadLines_MissingFile(t *testing.T) {
+	got, err := ReadLines(filepath.Join(t.TempDir(), "does-not-exist.txt"))
 	if err != nil {
 		t.Fatalf("expected no error for a missing file, got %v", err)
 	}

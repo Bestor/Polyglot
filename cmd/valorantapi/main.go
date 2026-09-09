@@ -20,6 +20,7 @@ import (
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
 
 	"val-analyzer/internal/ai"
+	"val-analyzer/internal/dataapi"
 	"val-analyzer/internal/httpauth"
 	"val-analyzer/internal/jobstore"
 	"val-analyzer/internal/logging"
@@ -89,11 +90,11 @@ func main() {
 		group := se.Router.Group("")
 		group.BindFunc(httpauth.RequireToken(cfg.APIAuthToken))
 		group.BindFunc(tracing.Middleware("valorantapi"))
-		group.GET("/query", handleQuery(query))
-		group.GET("/schema", handleSchema(se.App))
-		group.GET("/functions", handleFunctions(functions))
-		group.POST("/warm", handleWarm(functions, jobs))
-		group.GET("/warm", handleWarmStatus(jobs))
+		group.GET("/query", dataapi.HandleQuery(query))
+		group.GET("/schema", dataapi.HandleSchema(se.App))
+		group.GET("/functions", dataapi.HandleFunctions(functions))
+		group.POST("/warm", dataapi.HandleWarm("valorant", functions, jobs))
+		group.GET("/warm", dataapi.HandleWarmStatus(jobs))
 
 		return se.Next()
 	})

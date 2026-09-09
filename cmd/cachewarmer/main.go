@@ -13,9 +13,16 @@ import (
 	"syscall"
 	"time"
 
-	"val-analyzer/internal/cachewarmer"
 	"val-analyzer/internal/logging"
+	"val-analyzer/internal/warmer"
 )
+
+// playerTagArgs maps one watchlist line (a Riot ID, e.g. "OrBest#NA1") to
+// the args shape sync_matches/resolve_player expect - the one piece of
+// domain knowledge internal/warmer itself doesn't have.
+func playerTagArgs(line string) map[string]any {
+	return map[string]any{"player_tag": line}
+}
 
 func main() {
 	debug := getEnvBool("DEBUG", false)
@@ -35,13 +42,13 @@ func main() {
 		log.Fatalf("invalid WARM_INTERVAL: %v", err)
 	}
 
-	client := cachewarmer.NewClient(valorantAPIURL, authToken)
+	client := warmer.NewClient(valorantAPIURL, authToken)
 	ctx := context.Background()
 
 	log.Printf("cachewarmer: starting, valorant_api_url=%s players_file=%s function=%s interval=%s",
 		valorantAPIURL, playersFile, function, interval)
 
-	cachewarmer.RunPass(ctx, client, playersFile, function)
+	warmer.RunPass(ctx, client, playersFile, function, playerTagArgs)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -52,7 +59,7 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			cachewarmer.RunPass(ctx, client, playersFile, function)
+			warmer.RunPass(ctx, client, playersFile, function, playerTagArgs)
 		case <-stop:
 			log.Print("cachewarmer: shutting down")
 			return
