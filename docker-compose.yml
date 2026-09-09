@@ -63,6 +63,44 @@ services:
       retries: 10
       start_period: 10s
 
+  # A second standalone Data API, alongside valorantapi - own PocketBase,
+  # own migration set (internal/chesscom/migrations), reached by polyglot
+  # the same way (an onboarded "http_sql" datasource) with zero
+  # chesscom-specific code in polyglot itself. Unlike valorantapi's
+  # upstream (HenrikDev), chess.com's own Published Data API needs no API
+  # key at all - only a descriptive User-Agent (CHESSCOM_USER_AGENT), so
+  # there's no equivalent of HENRIK_API_KEY here.
+  chesscomapi:
+    build: .
+    image: ghcr.io/bestor/polyglot:latest
+    container_name: val-analyzer-chesscomapi
+    entrypoint: ["/app/chesscomapi"]
+    env_file: .env
+    environment:
+      PORT: 8094
+      DEBUG: ${DEBUG:-true}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    ports:
+      - "8094:8094"
+    depends_on:
+      jaeger:
+        condition: service_started
+    volumes:
+      # Same pattern as valorantapi's own pb_data volume: unset locally
+      # resolves to the named volume below; production's cloud-init-written
+      # .env points this at a subdirectory of the persistent DigitalOcean
+      # Volume instead - see terraform/volume.tf.
+      - ${CHESSCOM_PB_DATA_HOST_PATH:-chesscomapi-data}:/app/pb_data
+    # Same startup-race rationale as valorantapi's own healthcheck:
+    # chesscomwarmer's immediate first pass and polyglot's boot-time
+    # auto-onboard call both hit this service right away.
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8094/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
   openbao:
     image: openbao/openbao:2.5 # pinned, not :latest
     container_name: val-analyzer-openbao
@@ -119,6 +157,8 @@ services:
       VAULT_ADDR: http://openbao:8200
       VALORANT_API_URL: http://valorantapi:8093
       VALORANT_API_AUTH_TOKEN: ${API_AUTH_TOKEN}
+      CHESSCOM_API_URL: http://chesscomapi:8094
+      CHESSCOM_API_AUTH_TOKEN: ${API_AUTH_TOKEN}
       # Local dev default is verbose (./run.sh with no .env override);
       # production's cloud-init-written .env sets DEBUG=false explicitly -
       # this must stay a substitution, not a hardcoded "true", or every
@@ -145,6 +185,10 @@ services:
       # (log.Fatal in cmd/polyglot/main.go). service_healthy (not the
       # default service_started) is required here, not just nice-to-have.
       valorantapi:
+        condition: service_healthy
+      # Same rationale as valorantapi above - autoOnboardChesscomAPIFromEnv
+      # does its own real round trip to chesscomapi on boot.
+      chesscomapi:
         condition: service_healthy
     volumes:
       # A separate, fresh volume from valorantapi's - polyglot's own
@@ -302,10 +346,33 @@ services:
     depends_on:
       valorantapi:
         # Its own first warm pass runs immediately on startup (see
-        # internal/cachewarmer/run.go) - without waiting for valorantapi
+        # internal/warmer/run.go) - without waiting for valorantapi
         # to be actually ready (not just started), that first pass races
         # ahead of valorantapi's own PocketBase boot and fails with
         # connection refused, exactly as observed in production.
+        condition: service_healthy
+
+  # Same idea as cachewarmer, for chesscomapi - built on the same shared
+  # internal/warmer package (see cmd/chesscomwarmer/main.go), so the only
+  # real difference is which service it points at and which arg shape it
+  # posts. Not profile-gated either - cmd/chesscomwarmer/usernames.txt also
+  # ships empty, a safe no-op until usernames are added.
+  chesscomwarmer:
+    build: .
+    image: ghcr.io/bestor/polyglot:latest
+    container_name: val-analyzer-chesscomwarmer
+    entrypoint: ["/app/chesscomwarmer"]
+    env_file: .env
+    environment:
+      CHESSCOM_API_URL: http://chesscomapi:8094
+      CHESSCOM_API_AUTH_TOKEN: ${API_AUTH_TOKEN}
+      USERNAMES_FILE: /app/usernames.txt
+      DEBUG: ${DEBUG:-true}
+    volumes:
+      - ./cmd/chesscomwarmer/usernames.txt:/app/usernames.txt
+    depends_on:
+      chesscomapi:
+        # Same startup-race rationale as cachewarmer's own depends_on above.
         condition: service_healthy
 
 volumes:
@@ -317,6 +384,8 @@ volumes:
     # the real cached match/player data under the old volume name until
     # fixed here.
     name: val-analyzer-polyglot-data
+  chesscomapi-data:
+    name: val-analyzer-chesscomapi-data
   polyglot-metadata:
     name: val-analyzer-polyglot-metadata
   openbao-data:

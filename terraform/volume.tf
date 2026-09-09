@@ -1,8 +1,10 @@
-# The persistent home for valorantapi's cached PocketBase data, polyglot's
-# own (smaller) onboarding/catalog bookkeeping, and OpenBao's file storage
-# backend - three subdirectories on one disk (pb_data, polyglot_metadata,
-# openbao_file; see cloud-init.yaml.tftpl's mkdir/mount steps and
-# docker-compose.yml's *_HOST_PATH overrides). Kept as its own resource,
+# The persistent home for valorantapi's cached PocketBase data, chesscomapi's
+# own (separate) cached PocketBase data, polyglot's own (smaller)
+# onboarding/catalog bookkeeping, OpenBao's file storage backend, and
+# Caddy's own TLS state - five subdirectories on one disk (pb_data,
+# chesscom_pb_data, polyglot_metadata, openbao_file, caddy_data; see
+# cloud-init.yaml.tftpl's mkdir/mount steps and docker-compose.yml's
+# *_HOST_PATH overrides). Kept as its own resource,
 # decoupled from the droplet, specifically so the droplet can be treated as
 # disposable/reprovisionable without losing the cache that the whole
 # project's design exists to build up - see CLAUDE.md's "core design

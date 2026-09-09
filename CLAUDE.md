@@ -5,34 +5,41 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 val-analyzer is a Go backend that answers statistical questions about Valorant players (e.g.
-headshot % comparisons across a season/act), with the AI reasoning happening in an external MCP
-client rather than in-process. Riot/HenrikDev API calls are severely rate-limited, so aggressive
-local caching (in an embedded PocketBase) is the core design constraint driving most of the
-architecture below.
+headshot % comparisons across a season/act) and, as of the chess.com integration below, chess.com
+players too, with the AI reasoning happening in an external MCP client rather than in-process.
+Upstream APIs (Riot/HenrikDev, chess.com) are rate-limited (severely, in HenrikDev's case), so
+aggressive local caching (in an embedded PocketBase per Data API) is the core design constraint
+driving most of the architecture below.
 
-The stack is five binaries, split across two Data APIs: **valorantapi**, a standalone service that
-owns all of Valorant's actual cached data (its own embedded PocketBase, its own ingest from
-HenrikDev, `GET /query`, `GET /schema`, `POST`/`GET /warm`); **polyglot**, a generic, domain-agnostic
-Data API host (`GET /query`, `GET /metadata`, `GET`/`POST /datasources`, `POST /datasources/
-reconcile`, the `*/annotate` curation endpoints) that knows nothing about Valorant specifically - it
-reaches valorantapi's data the same way it would reach any other onboarded datasource, over the
-network; **mcpserver**, an MCP server generated from polyglot's OpenAPI spec that proxies each tool
-call to a running polyglot instance over HTTP; **discordbot**, an MCP client that drives the actual
-question-answering - it connects to mcpserver, hands its tools to Claude, and lets Claude's tool-use
-loop decide which ones to call to answer a Discord `/ask` question; and **cachewarmer**, which
+The stack is seven binaries, split across three Data APIs: **valorantapi**, a standalone service
+that owns all of Valorant's actual cached data (its own embedded PocketBase, its own ingest from
+HenrikDev, `GET /query`, `GET /schema`, `POST`/`GET /warm`); **chesscomapi**, the same shape for
+chess.com player/game data (own embedded PocketBase, own ingest from chess.com's public, key-free
+Published Data API, the identical `GET /query`/`GET /schema`/`POST`-`GET /warm` surface) - proof
+that hosting a second domain needs zero new code in polyglot itself, just a new standalone Data API
+built on the same shared `internal/dataapi` handlers; **polyglot**, a generic, domain-agnostic Data
+API host (`GET /query`, `GET /metadata`, `GET`/`POST /datasources`, `POST /datasources/reconcile`,
+the `*/annotate` curation endpoints) that knows nothing about either domain specifically - it reaches
+valorantapi's and chesscomapi's data the same way it would reach any other onboarded datasource, over
+the network; **mcpserver**, an MCP server generated from polyglot's OpenAPI spec that proxies each
+tool call to a running polyglot instance over HTTP; **discordbot**, an MCP client that drives the
+actual question-answering - it connects to mcpserver, hands its tools to Claude, and lets Claude's
+tool-use loop decide which ones to call to answer a Discord `/ask` question; **cachewarmer**, which
 proactively calls `POST /warm` on valorantapi on a cadence for a configured list of players, so
-caches stay fresh without a live question needing to trigger a sync.
+caches stay fresh without a live question needing to trigger a sync; and **chesscomwarmer**, the same
+idea against chesscomapi for a configured list of chess.com usernames - both warmers are thin
+domain-specific wrappers (just an `argsFor` closure) around the shared `internal/warmer` package.
 
 polyglot itself has no built-in domain knowledge and no data of its own beyond its own onboarding/
 catalog bookkeeping - every table a caller can query comes from a `dataprovider.Provider` connection
 (`internal/dataprovider`) onboarded at runtime via `POST /datasources`: either a local SQLite file
 (`internal/providers/sqlite`), or another service speaking polyglot's own small `GET /query`+
-`GET /schema` contract over the network (`internal/providers/httpsql`). valorantapi is onboarded into
-polyglot as an ordinary `http_sql` datasource named `valorant` - not a special case, and the same
-mechanism can host other domains (e.g. a hypothetical NFL or chess.com standalone API) with zero new
-code in polyglot itself. Every onboarded datasource's secrets (e.g. an `http_sql` datasource's bearer
-token) live in a self-hosted OpenBao (open-source Vault fork) instance, never as plaintext in
-polyglot's own persisted config - see `internal/vault`.
+`GET /schema` contract over the network (`internal/providers/httpsql`). valorantapi and chesscomapi
+are each onboarded into polyglot as an ordinary `http_sql` datasource (named `valorant`/`chesscom`
+respectively) - neither is a special case, and the same mechanism can host further domains (e.g. a
+hypothetical NFL standalone API) with zero new code in polyglot itself. Every onboarded datasource's
+secrets (e.g. an `http_sql` datasource's bearer token) live in a self-hosted OpenBao (open-source
+Vault fork) instance, never as plaintext in polyglot's own persisted config - see `internal/vault`.
 
 ## Go toolchain: Docker only, never local
 
@@ -72,31 +79,38 @@ Run the stack via Docker Compose:
 ./run.sh --build   # or -b: docker compose up -d --build
 ./run.sh            # docker compose up -d, reusing existing images
 docker logs -f val-analyzer-valorantapi
+docker logs -f val-analyzer-chesscomapi
 docker logs -f val-analyzer-openbao
 docker logs -f val-analyzer-polyglot
 docker logs -f val-analyzer-mcpserver
 docker logs -f val-analyzer-discordbot
 docker logs -f val-analyzer-cachewarmer
+docker logs -f val-analyzer-chesscomwarmer
 ```
 
 `run.sh` is a thin wrapper around `docker compose up` (`docker-compose.yml` at the repo root) - all
 app configuration (ports, PocketBase data volumes, inter-service URLs) lives there, and all secrets/
-values come from `.env` (see `.env.example`). Every service (`valorantapi`, `polyglot`, `mcpserver`,
-`discordbot`, `cachewarmer`) builds from the one image (the same Dockerfile, containing all five
-binaries), each overriding `entrypoint` to run its own binary; `openbao` runs the upstream
-`openbao/openbao` image, not this repo's own image. `API_AUTH_TOKEN`, `HENRIK_API_KEY`, and the three
-`VAULT_*` vars (`VAULT_ADDR`/`VAULT_TOKEN`/`VAULT_UNSEAL_KEY`) are required in `.env` - polyglot fails
-fast at boot without the vault vars, matching `API_AUTH_TOKEN`'s existing pattern (see
-`internal/vault` for why an unseal key, not just an address/token, is required: OpenBao's file
-backend starts sealed on every restart, and polyglot auto-unseals it on boot rather than requiring a
-manual step each time). `SUPERUSER_EMAIL`/`SUPERUSER_PASSWORD` (set together or not at all)
-auto-provision each PocketBase-embedded binary's own admin UI superuser on boot.
-`DISCORD_BOT_TOKEN`/`ANTHROPIC_API_KEY` are optional: the `discordbot` service is gated behind
-Compose's `discordbot` profile (see `docker-compose.yml`), which only activates when `.env` sets
-`COMPOSE_PROFILES=discordbot` - otherwise `docker compose up` starts everything else, since
-`cmd/discordbot` fails fast without those values. `cachewarmer` is not profile-gated - it ships with
-an empty `cmd/cachewarmer/players.txt` (a safe no-op) and starts by default; add Riot IDs to that
-file (one `name#tag` per line) to have it actually warm anyone.
+values come from `.env` (see `.env.example`). Every service (`valorantapi`, `chesscomapi`, `polyglot`,
+`mcpserver`, `discordbot`, `cachewarmer`, `chesscomwarmer`) builds from the one image (the same
+Dockerfile, containing all seven binaries), each overriding `entrypoint` to run its own binary;
+`openbao` runs the upstream `openbao/openbao` image, not this repo's own image. `API_AUTH_TOKEN`,
+`HENRIK_API_KEY`, `CHESSCOM_USER_AGENT`, and the three `VAULT_*` vars (`VAULT_ADDR`/`VAULT_TOKEN`/
+`VAULT_UNSEAL_KEY`) are required in `.env` - polyglot fails fast at boot without the vault vars,
+matching `API_AUTH_TOKEN`'s existing pattern (see `internal/vault` for why an unseal key, not just an
+address/token, is required: OpenBao's file backend starts sealed on every restart, and polyglot
+auto-unseals it on boot rather than requiring a manual step each time). Unlike `HENRIK_API_KEY`,
+`CHESSCOM_USER_AGENT` isn't an API key - chess.com's Published Data API needs no authentication at
+all - but chess.com's own guidance asks for a descriptive User-Agent with real contact info so they
+can warn before blocking, so `cmd/chesscomapi` requires it the same way `cmd/valorantapi` requires a
+key. `SUPERUSER_EMAIL`/`SUPERUSER_PASSWORD` (set together or not at all) auto-provision each
+PocketBase-embedded binary's own admin UI superuser on boot. `DISCORD_BOT_TOKEN`/`ANTHROPIC_API_KEY`
+are optional: the `discordbot` service is gated behind Compose's `discordbot` profile (see
+`docker-compose.yml`), which only activates when `.env` sets `COMPOSE_PROFILES=discordbot` -
+otherwise `docker compose up` starts everything else, since `cmd/discordbot` fails fast without those
+values. `cachewarmer`/`chesscomwarmer` are not profile-gated - each ships with an empty watchlist
+(`cmd/cachewarmer/players.txt`, `cmd/chesscomwarmer/usernames.txt` - a safe no-op) and starts by
+default; add Riot IDs (one `name#tag` per line) / chess.com usernames (one per line) to have either
+actually warm anyone.
 
 Manual smoke test against a running container:
 
@@ -104,15 +118,17 @@ Manual smoke test against a running container:
 ./warm.sh   # POST /warm (sync_matches) against valorantapi directly; prints a 202 + job id to poll
 ```
 
-Two separate migration sets, one per PocketBase-embedded binary: `internal/migrations` (polyglot's
+Three separate migration sets, one per PocketBase-embedded binary: `internal/migrations` (polyglot's
 own `datasources`/`tables`/`columns` onboarding/catalog bookkeeping, hand-authored Go files
-registered via `m.Register` in `init()`) and `internal/valorant/migrations` (valorantapi's 15
-Valorant domain tables, same authoring pattern, unchanged filenames/timestamps from before the
-two-binary split - see the Architecture section's cutover note for why that matters). Both
-auto-apply on every boot via `app.OnBootstrap()` + `RunAppMigrations()` in each binary's own
-`main.go` — `migratecmd`'s own `migrate` subcommand does *not* run automatically on `serve`, so that
-boot hook is the actual mechanism keeping a fresh container's schema up to date, not just an ops
-convenience.
+registered via `m.Register` in `init()`), `internal/valorant/migrations` (valorantapi's 15 Valorant
+domain tables, same authoring pattern, unchanged filenames/timestamps from before the two-binary
+split - see the Architecture section's cutover note for why that matters), and
+`internal/chesscom/migrations` (chesscomapi's own 6 domain tables - `players`/`player_ratings`/
+`player_months`/`games`/`game_players`/`moves` - same authoring pattern again, brand new so no
+cutover concern). All three auto-apply on every boot via `app.OnBootstrap()` +
+`RunAppMigrations()` in each binary's own `main.go` —
+`migratecmd`'s own `migrate` subcommand does *not* run automatically on `serve`, so that boot hook is
+the actual mechanism keeping a fresh container's schema up to date, not just an ops convenience.
 
 ## Deployment (CI/CD)
 
@@ -141,15 +157,16 @@ DigitalOcean Space (`terraform/main.tf`'s `s3` backend block, pointed at a DO Sp
 rather than Terraform Cloud - one provider to manage - with `use_lockfile = true` for real state
 locking (no DynamoDB-equivalent needed). `volume.tf`'s `digitalocean_volume` is a separate,
 `prevent_destroy`-protected resource specifically so the cache - the whole point of this project's
-design - survives even a real droplet recreate; it now backs four subdirectories, not one:
+design - survives even a real droplet recreate; it now backs five subdirectories, not one:
 `pb_data` (valorantapi's Valorant cache - same name/path from before the two-binary split, so a
 cutover just retargets the existing volume to a different service, zero backfill),
+`chesscom_pb_data` (chesscomapi's own, separate chess.com cache - brand new, no cutover concern),
 `polyglot_metadata` (polyglot's own, separate, always-fresh onboarding/catalog database),
 `openbao_file` (OpenBao's file storage backend), and `caddy_data` (Caddy's own TLS cert/OCSP state,
 so a recreate doesn't burn a fresh Let's Encrypt issuance). `docker-compose.yml`'s services point
 their respective volumes at those subdirectories in production via `PB_DATA_HOST_PATH`/
-`PB_METADATA_HOST_PATH`/`VAULT_DATA_HOST_PATH`/`CADDY_DATA_HOST_PATH` (all unset locally, so local
-dev is unaffected).
+`CHESSCOM_PB_DATA_HOST_PATH`/`PB_METADATA_HOST_PATH`/`VAULT_DATA_HOST_PATH`/`CADDY_DATA_HOST_PATH`
+(all unset locally, so local dev is unaffected).
 
 **OpenBao's one-time init/policy setup is fully automated, not a by-hand step** -
 `terraform/cloud-init.yaml.tftpl` brings OpenBao up alone first (before the rest of the stack), then
@@ -174,7 +191,8 @@ practice, so a normal `terraform apply` does *not* reliably recreate the droplet
 the initial deploy). Use the `deploy.yml` workflow's `workflow_dispatch` trigger with
 `recreate_droplet: true` to force it (`terraform apply -replace="digitalocean_droplet.app"`) -
 needed after editing `cloud-init.yaml.tftpl` itself, or after rotating an app secret (`HENRIK_API_KEY`,
-`DISCORD_BOT_TOKEN`, `VAULT_TOKEN`, etc. - these flow GitHub Actions secret -> `TF_VAR_*` -> templated
+`CHESSCOM_USER_AGENT`, `DISCORD_BOT_TOKEN`, `VAULT_TOKEN`, etc. - these flow GitHub Actions secret ->
+`TF_VAR_*` -> templated
 into `cloud-init.yaml.tftpl` -> the droplet's `.env`, written once at boot, so a rotated secret's new
 value never reaches an already-running droplet without an explicit recreate).
 
@@ -191,15 +209,15 @@ true`) to switch it again.
 ghcr.io/bestor/polyglot:latest`** (except `openbao`, which runs the upstream image) - local dev
 (`run.sh --build`) builds and tags locally under that name with zero registry interaction; the
 droplet's `docker compose pull` fetches the same tag from GHCR instead of building (small droplet, no
-need to compile 5 Go binaries on it). The GHCR package is public (the image only ever contains
-compiled binaries/`openapi/`/the secret-free `players.txt` - never a secret), so the pull needs no
-registry auth on the droplet side.
+need to compile 7 Go binaries on it). The GHCR package is public (the image only ever contains
+compiled binaries/`openapi/`/the secret-free `players.txt`/`usernames.txt` - never a secret), so the
+pull needs no registry auth on the droplet side.
 
 Nothing besides SSH (22) and HTTPS (443) is reachable on the droplet's public IP
 (`terraform/droplet.tf`'s `digitalocean_firewall`) - every internal service (`valorantapi`,
-`openbao`, `polyglot`, `mcpserver`) is only ever reached over the internal Compose network by
-another service, `discordbot` itself only makes outbound connections, and 443 reaches nothing but
-`caddy` (see below) - so none of the rest of this stack needs to be internet-facing.
+`chesscomapi`, `openbao`, `polyglot`, `mcpserver`) is only ever reached over the internal Compose
+network by another service, `discordbot` itself only makes outbound connections, and 443 reaches
+nothing but `caddy` (see below) - so none of the rest of this stack needs to be internet-facing.
 
 **`caddy` (the `caddy` Compose profile) is the one public entrypoint** - it fronts `webui` (the
 root domain), `mcpserver` (`mcp.<domain>`, so a friend's own local Claude Code can connect
@@ -316,26 +334,42 @@ RunFunction`/`FunctionJobStatus` are deliberately synchronous proxy calls, never
 goroutine/local `jobstore` entry like `startReconcile` - double-wrapping an already-async remote call
 would just orphan the real job id behind a second, meaningless one.
 
+**`internal/dataapi`, `internal/warmer`, and `internal/upstreamhttp`** are the shared building blocks
+that let a second standalone Data API (chesscomapi, below) reuse valorantapi's exact shape instead of
+re-implementing it: `internal/dataapi`'s `HandleQuery`/`HandleSchema`/`HandleFunctions`/`HandleWarm`/
+`HandleWarmStatus` are the whole `GET /query`+`GET /schema`+`GET /functions`+`POST`/`GET /warm`
+surface, generic over a domain's own `ai.QueryFunc`, `core.App`, and `[]Function` - a standalone Data
+API's own `main.go` just wires these into its router (see `cmd/valorantapi`/`cmd/chesscomapi`
+below, whose `OnServe` blocks are near-identical). `internal/warmer`'s `Client`/`RunPass` is the
+proactive-warmer half of the same idea: read a watchlist file, `POST /warm` once per line,
+fire-and-forget (never waits for a job to finish - `/warm` is already async) - `cmd/cachewarmer`/
+`cmd/chesscomwarmer` each supply only their own `argsFor` closure (Riot ID -> args vs. chess.com
+username -> args) and watchlist path. `internal/upstreamhttp`'s `Client` is the shared
+rate-limited-GET-with-429-retry mechanics (honoring `Retry-After`, exponential backoff otherwise,
+mapping any other non-2xx to a typed `APIError`) every upstream client (`henrik`, `chesscom`) builds
+on, knowing nothing about either upstream's URL shape/auth/response bodies itself.
+
 **`cmd/valorantapi`** (`internal/valorant`) is the standalone Valorant Data API: its own embedded
 PocketBase (own `pb_data`, own migration set at `internal/valorant/migrations` - same filenames/
 timestamps as before the two-binary split, so the droplet's existing cache carries over with zero
 backfill on cutover), `ingest.Service` wired directly against it (no `dataprovider.Provider`/
 `Registry` layer at all - there's exactly one domain here, so that plugin abstraction is pure
-overhead). Exposes `GET /query` (`ai.NewReadOnlyExecutor` against its own db, raw `ai.QueryResult`
-JSON - a machine-to-machine contract for `internal/providers/httpsql`, not row-objects for
-mcpserver), `GET /schema` (introspects its own live collections), `GET /functions` (structure-only
-listing of `functions.go`'s `Function`s' `Name`/`Description`/`Args` - what `internal/providers/
-httpsql`'s `Functions` call builds `dataprovider.FunctionCatalog`s from), and `POST`/`GET /warm`
-(using `internal/jobstore`, dispatching to `functions.go`'s `resolve_player`/`sync_matches`/
-`sync_seasons`/`backfill_match_seasons` - local `Function`/`FunctionArg` types now, since this binary
-doesn't implement `dataprovider.Provider`). `HENRIK_API_KEY` etc. are plain boot-time env vars here, not
-vault-managed - deliberately: vault protection in this design is for secrets persisted into a
-queryable PocketBase collection (`datasources.config`), and this credential is held only in this
-process's memory, the same threat model `discordbot`'s/`cachewarmer`'s own plain secrets already
-live under. It wraps three sub-packages, unchanged in behavior from before the split, just relocated
-from `internal/providers/valorant`:
+overhead). Exposes the shared `internal/dataapi` surface - `GET /query` (against its own db, raw
+`ai.QueryResult` JSON - a machine-to-machine contract for `internal/providers/httpsql`, not
+row-objects for mcpserver), `GET /schema` (introspects its own live collections), `GET /functions`
+(structure-only listing of `functions.go`'s `Function`s' `Name`/`Description`/`Args` - what
+`internal/providers/httpsql`'s `Functions` call builds `dataprovider.FunctionCatalog`s from), and
+`POST`/`GET /warm` (dispatching to `functions.go`'s `resolve_player`/`sync_matches`/`sync_seasons`/
+`backfill_match_seasons` - local `Function`/`FunctionArg` types, since this binary doesn't implement
+`dataprovider.Provider`). `HENRIK_API_KEY` etc. are plain boot-time env vars here, not vault-managed -
+deliberately: vault protection in this design is for secrets persisted into a queryable PocketBase
+collection (`datasources.config`), and this credential is held only in this process's memory, the
+same threat model `discordbot`'s/`cachewarmer`'s own plain secrets already live under. It wraps three
+sub-packages, unchanged in behavior from before the split, just relocated from
+`internal/providers/valorant`:
 - `data_sources` (+ `data_sources/henrik`) — a provider-agnostic `Source` interface plus Valorant
-  DTOs; `henrik` is the only implementation today, against the unofficial HenrikDev API.
+  DTOs; `henrik` is the only implementation today, against the unofficial HenrikDev API, built on
+  `internal/upstreamhttp`.
 - `ingest` (`Service`) — resolves Riot IDs into cached players and syncs match history.
   `SyncPlayerMatches` always pages *backward* through history (the upstream API only exposes "most
   recent N + offset", no real date filter) until `MaxMatches` is hit, a `Since` bound is satisfied,
@@ -345,20 +379,40 @@ from `internal/providers/valorant`:
   has walked all the way to a player's true first match (an empty upstream page), any future
   request for arbitrarily old data is trivially satisfied without re-hitting upstream.
 
+**`cmd/chesscomapi`** (`internal/chesscom`) is the standalone chess.com Data API, mirroring
+`cmd/valorantapi` exactly - own embedded PocketBase (own `pb_data`, own migration set at
+`internal/chesscom/migrations`), `ingest.Service` wired directly against it, the same
+`internal/dataapi`-provided `GET /query`/`GET /schema`/`GET /functions`/`POST`-`GET /warm` surface
+(`functions.go`'s `resolve_player`/`sync_stats`/`sync_games`/`reparse_moves` dispatched via
+`POST /warm`). The one real architectural difference from valorantapi: chess.com's Published Data
+API needs no API key at all
+(`CHESSCOM_USER_AGENT` is required instead, purely so chess.com can identify/warn a caller before
+blocking - see the Commands section). Sub-packages, same division of labor as valorantapi's:
+- `data_sources/chesscom` — the only `Source` implementation, against chess.com's public Published
+  Data API, built on `internal/upstreamhttp`; `stats.go` maps chess.com's per-time-class stats blob
+  into this domain's `player_ratings` shape.
+- `pgn` — a small PGN (Portable Game Notation) move-text parser, since chess.com's own game payload
+  embeds full move history as one PGN string rather than structured per-move data - this is what
+  populates the `moves` table from it.
+- `ingest` (`Service`) — resolves usernames into cached players and syncs game history (games +
+  their parsed moves + monthly rating snapshots).
+- `store` — the same typed-wrapper-over-`core.Record` pattern as valorantapi's, one file per
+  collection (`players`, `ratings`, `months`, `games`).
+
 Curated table/column descriptions that used to live as hardcoded `Description` strings in
-`internal/providers/valorant/tables.go` have no equivalent home in `cmd/valorantapi` (that binary
-doesn't have a `tables`/`columns` catalog - only polyglot does) - they need to be re-entered by hand
-via `POST /tables/annotate`/`POST /columns/annotate` against polyglot's catalog post-onboarding, a
-one-time manual curation pass, not something any migration automates.
+`internal/providers/valorant/tables.go` have no equivalent home in `cmd/valorantapi`/`cmd/chesscomapi`
+(neither binary has a `tables`/`columns` catalog - only polyglot does) - they need to be re-entered by
+hand via `POST /tables/annotate`/`POST /columns/annotate` against polyglot's catalog post-onboarding,
+a one-time manual curation pass, not something any migration automates.
 
 `internal/ratelimit` (a plain, provider-agnostic token bucket) stays at the top level - imported by
-`cmd/valorantapi`, since rate limiting is specific to whichever upstream API a given ingest client
-talks to.
+`cmd/valorantapi`/`cmd/chesscomapi`, since rate limiting is specific to whichever upstream API a given
+ingest client talks to.
 
 `internal/jobstore` (generic in-memory async job tracking) and `internal/httpauth` (the static
-bearer-token middleware) are both shared by `cmd/polyglot` and `cmd/valorantapi` - small, deliberate
-extractions so the async-job-polling and auth-gating patterns aren't duplicated across the two
-PocketBase-embedded binaries.
+bearer-token middleware) are shared by `cmd/polyglot`, `cmd/valorantapi`, and `cmd/chesscomapi` -
+small, deliberate extractions so the async-job-polling and auth-gating patterns aren't duplicated
+across the three PocketBase-embedded binaries.
 
 **`cmd/mcpserver`** (`internal/mcpserver`) exposes polyglot as MCP tools: `spec.go` parses
 `openapi/polyglot.yaml` at load time into one `Operation` per spec operation (so tool schemas can
@@ -389,27 +443,32 @@ deferring the interaction response since the tool-use loop routinely takes longe
 ~3s initial-response window. Defaults to `claude-opus-4-8` (`ANTHROPIC_MODEL` overrides it) -
 never silently downgraded to a cheaper model.
 
-**`cmd/cachewarmer`** (`internal/cachewarmer`) is the proactive counterpart to `/warm` being async:
+**`cmd/cachewarmer`**/**`cmd/chesscomwarmer`** are the proactive counterpart to `/warm` being async:
 since an AI tool-caller can't usefully call `warm` mid-question and get data back in time, caches
-need to be kept warm some other way. `players.go`'s `ReadPlayerTags` reads a newline-delimited Riot
-ID list (`cmd/cachewarmer/players.txt`, blank/`#`-comment lines skipped) fresh on every pass, so
-edits take effect without a restart; `client.go` is a minimal bearer-token `POST /warm` client
-(against valorantapi directly now - `POLYGLOT_URL`/`POLYGLOT_AUTH_TOKEN` env var names are unchanged
-from before the split, just retargeted, and the request body no longer carries a `datasource` field
-since valorantapi hosts exactly one domain); `run.go`'s `RunPass` fires one `Warm` call per player
-*sequentially* (no benefit to concurrency - each call returns in milliseconds since the slow work
-happens server-side and async) and never waits for a job to finish. `main.go` runs one pass
-immediately on startup, then on a `time.Ticker` at `WARM_INTERVAL` (default `1h`), until `SIGTERM`.
-Not gated behind a Compose profile like `discordbot` - it ships with an empty `players.txt` (a safe
-no-op) and starts by default.
+need to be kept warm some other way. Both are now thin wrappers around the shared `internal/warmer`
+package (see above) - `internal/warmer.ReadLines` reads a newline-delimited identifier
+list (`cmd/cachewarmer/players.txt` for Riot IDs, `cmd/chesscomwarmer/usernames.txt` for chess.com
+usernames; blank/`#`-comment lines skipped) fresh on every pass, so edits take effect without a
+restart; `internal/warmer.Client` is a minimal bearer-token `POST /warm` client (against
+valorantapi/chesscomapi directly - `cmd/cachewarmer`'s `POLYGLOT_URL`/`POLYGLOT_AUTH_TOKEN` env var
+names are unchanged from before the two-binary split, just retargeted, and the request body no
+longer carries a `datasource` field since each standalone Data API hosts exactly one domain);
+`internal/warmer.RunPass` fires one `Warm` call per identifier *sequentially* (no benefit to
+concurrency - each call returns in milliseconds since the slow work happens server-side and async)
+and never waits for a job to finish, mapping each watchlist line to that domain's own args shape via
+a caller-supplied closure (`usernameArgs` in `cmd/chesscomwarmer/main.go`, the equivalent in
+`cmd/cachewarmer/main.go`). Each `main.go` runs one pass immediately on startup, then on a
+`time.Ticker` at `WARM_INTERVAL` (default `1h`), until `SIGTERM`. Neither is gated behind a Compose
+profile like `discordbot` - each ships with an empty watchlist file (a safe no-op) and starts by
+default.
 
 **`internal/ai`** is scoped to exactly one thing: read-only SQL execution.
 `ai.NewReadOnlyExecutor` opens a *second* SQLite connection with `?mode=ro`, so it's physically
 incapable of writing regardless of query text; the `SELECT`/`WITH`-prefix check on top of that is
-defense in depth, not the primary guarantee. Both binaries use it for their own database
-(`cmd/polyglot` for its bookkeeping db, `cmd/valorantapi` for its Valorant cache), and
-`internal/providers/sqlite` opens its own separate `mode=ro` connection to whatever file it's
-onboarded against - all three share the exact same row/cell/cumulative-byte truncation safety caps
-via the extracted `ai.RunReadOnlyQuery(ctx, db, sqlText)`, never reimplemented per caller. Schema
-description now lives entirely in `internal/polyglot`'s persisted `tables`/`columns` catalog, not
-built from any hardcoded table list.
+defense in depth, not the primary guarantee. All three PocketBase-embedded binaries use it for their
+own database (`cmd/polyglot` for its bookkeeping db, `cmd/valorantapi` for its Valorant cache,
+`cmd/chesscomapi` for its chess.com cache), and `internal/providers/sqlite` opens its own separate
+`mode=ro` connection to whatever file it's onboarded against - all four share the exact same
+row/cell/cumulative-byte truncation safety caps via the extracted `ai.RunReadOnlyQuery(ctx, db,
+sqlText)`, never reimplemented per caller. Schema description now lives entirely in
+`internal/polyglot`'s persisted `tables`/`columns` catalog, not built from any hardcoded table list.

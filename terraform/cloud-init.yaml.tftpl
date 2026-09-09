@@ -12,19 +12,23 @@ runcmd:
   - [ sh, -c, "grep -q val-analyzer-data /etc/fstab || echo '/dev/disk/by-id/scsi-0DO_Volume_val-analyzer-data /mnt/val-analyzer-data ext4 defaults,nofail,discard 0 0' >> /etc/fstab" ]
   # pb_data: unchanged name/path from before the two-binary split - now
   # mounted into valorantapi instead of polyglot, so the existing cached
-  # match data carries over with zero backfill on cutover. polyglot_metadata
-  # and openbao_file are new, empty subdirectories on the same persistent
-  # volume (avoids a second prevent_destroy-protected digitalocean_volume
-  # resource and its added monthly cost).
+  # match data carries over with zero backfill on cutover. polyglot_metadata,
+  # openbao_file, caddy_data, and chesscom_pb_data are all new, empty
+  # subdirectories on the same persistent volume (avoids a second
+  # prevent_destroy-protected digitalocean_volume resource and its added
+  # monthly cost) - chesscom_pb_data has no cutover concern of its own,
+  # chesscomapi is a brand new service with nothing to carry over.
   - mkdir -p /mnt/val-analyzer-data/pb_data
   - mkdir -p /mnt/val-analyzer-data/polyglot_metadata
   - mkdir -p /mnt/val-analyzer-data/openbao_file
   - mkdir -p /mnt/val-analyzer-data/caddy_data
+  - mkdir -p /mnt/val-analyzer-data/chesscom_pb_data
   - [ sh, -c, "test -d /opt/val-analyzer/.git && (cd /opt/val-analyzer && git pull) || git clone --branch main https://github.com/Bestor/Polyglot.git /opt/val-analyzer" ]
   - |
     cat > /opt/val-analyzer/.env <<'EOF'
     API_AUTH_TOKEN=${api_auth_token}
     HENRIK_API_KEY=${henrik_api_key}
+    CHESSCOM_USER_AGENT=${chesscom_user_agent}
     DISCORD_BOT_TOKEN=${discord_bot_token}
     ANTHROPIC_API_KEY=${anthropic_api_key}
     ANTHROPIC_MODEL=${anthropic_model}
@@ -37,6 +41,7 @@ runcmd:
     PB_METADATA_HOST_PATH=/mnt/val-analyzer-data/polyglot_metadata
     VAULT_DATA_HOST_PATH=/mnt/val-analyzer-data/openbao_file
     CADDY_DATA_HOST_PATH=/mnt/val-analyzer-data/caddy_data
+    CHESSCOM_PB_DATA_HOST_PATH=/mnt/val-analyzer-data/chesscom_pb_data
     DEBUG=false
     EOF
   # Friend Basic Auth credentials - kept out of the .env heredoc above since

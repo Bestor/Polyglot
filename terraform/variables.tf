@@ -48,6 +48,12 @@ variable "henrik_api_key" {
   sensitive   = true
 }
 
+variable "chesscom_user_agent" {
+  description = "User-Agent cmd/chesscomapi sends to chess.com's Published Data API (e.g. \"val-analyzer/1.0 (+contact: you@example.com)\"). Not an API key - chess.com's API is unauthenticated - but required since it embeds a real contact address; kept a secret var like henrik_api_key so that address never lands in Terraform defaults or CLAUDE.md."
+  type        = string
+  sensitive   = true
+}
+
 variable "discord_bot_token" {
   description = "Discord bot token (cmd/discordbot)."
   type        = string

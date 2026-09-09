@@ -114,6 +114,9 @@ func main() {
 		if err := autoOnboardValorantAPIFromEnv(ctx, se.App, reg); err != nil {
 			return err
 		}
+		if err := autoOnboardChesscomAPIFromEnv(ctx, se.App, reg); err != nil {
+			return err
+		}
 
 		query, err := ai.NewReadOnlyExecutor(cfg.PBDataDir)
 		if err != nil {
@@ -161,6 +164,33 @@ func autoOnboardValorantAPIFromEnv(ctx context.Context, app core.App, reg *polyg
 
 	cfg := map[string]any{"base_url": baseURL, "auth_token": token}
 	_, err := reg.Onboard(ctx, app, valorantDatasourceName, httpsql.Type, cfg)
+	return err
+}
+
+// chesscomDatasourceName mirrors valorantDatasourceName's own role for the
+// chess.com standalone Data API - a second proof (alongside valorantapi
+// itself) that hosting one more such API needs zero chesscom-specific code
+// in polyglot: this whole function imports nothing from internal/chesscom.
+const chesscomDatasourceName = "chesscom"
+
+// autoOnboardChesscomAPIFromEnv mirrors autoOnboardValorantAPIFromEnv
+// exactly, for CHESSCOM_API_URL/CHESSCOM_API_AUTH_TOKEN.
+func autoOnboardChesscomAPIFromEnv(ctx context.Context, app core.App, reg *polyglot.Registry) error {
+	baseURL := os.Getenv("CHESSCOM_API_URL")
+	if baseURL == "" {
+		return nil
+	}
+	if _, ok := reg.Instance(chesscomDatasourceName); ok {
+		return nil
+	}
+
+	token := os.Getenv("CHESSCOM_API_AUTH_TOKEN")
+	if token == "" {
+		return fmt.Errorf("CHESSCOM_API_URL is set but CHESSCOM_API_AUTH_TOKEN is not")
+	}
+
+	cfg := map[string]any{"base_url": baseURL, "auth_token": token}
+	_, err := reg.Onboard(ctx, app, chesscomDatasourceName, httpsql.Type, cfg)
 	return err
 }
 

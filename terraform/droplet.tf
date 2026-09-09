@@ -24,6 +24,7 @@ resource "digitalocean_droplet" "app" {
   user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
     api_auth_token              = var.api_auth_token
     henrik_api_key              = var.henrik_api_key
+    chesscom_user_agent         = var.chesscom_user_agent
     discord_bot_token           = var.discord_bot_token
     anthropic_api_key           = var.anthropic_api_key
     anthropic_model             = var.anthropic_model

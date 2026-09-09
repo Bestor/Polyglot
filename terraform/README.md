@@ -109,6 +109,9 @@ protection on deploys later without touching the workflow.
 - [ ] `API_AUTH_TOKEN` - same value you'd use locally in `.env`; this becomes both `polyglot`'s and
   `mcpserver`'s shared bearer token in production
 - [ ] `HENRIK_API_KEY` - cmd/valorantapi's own boot-time config since the two-binary split
+- [ ] `CHESSCOM_USER_AGENT` - cmd/chesscomapi's own boot-time config, e.g.
+  `val-analyzer/1.0 (+contact: you@example.com)`; chess.com's API needs no key, but does want a
+  descriptive User-Agent with real contact info
 - [ ] `DISCORD_BOT_TOKEN`
 - [ ] `ANTHROPIC_API_KEY`
 - [ ] `SUPERUSER_EMAIL` (optional - leave the GitHub secret unset/empty if you don't want an admin
