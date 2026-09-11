@@ -3,3 +3,4 @@
 # it's bind-mounted into the chesscomwarmer container so changes take
 # effect on the next hourly pass, no rebuild/restart needed. Empty by
 # default - a safe no-op until usernames are added.
+bestor0
